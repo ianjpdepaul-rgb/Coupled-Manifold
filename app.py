@@ -5150,7 +5150,8 @@ plt.tight_layout()
         and len(user_msg.strip()) >= 20
     )
     _trace_quality = (
-        trace > -50
+        trace is not None
+        and trace > -50
         and ctrl_active.consec_patho == 0
         and abs(_pre_slope) < 50
     )
@@ -5172,6 +5173,7 @@ plt.tight_layout()
         _skip_reason = (
             "online_off" if not online_learning[0]
             else "low_user_quality" if not _user_quality
+            else "trace_unavailable" if trace is None
             else "bad_trace" if not _trace_quality
             else "repetitive" if not _diverse
             else "degenerate" if _is_degenerate
@@ -5260,7 +5262,7 @@ plt.tight_layout()
     # Medulla
     icon  = "🟢" if mode == "lora" else "🔴"
     state = "CONSTRUCTIVE" if mode == "lora" else "ROUGHENING"
-    bar   = "█" * min(max(int(abs(trace) / 100), 1), 30)
+    bar   = "█" * min(max(int(abs(trace) / 100), 1), 30) if trace is not None else "·"
     ti    = "📉" if trend_name == "declining" else "📈" if trend_name == "rising" else "➡️"
 
     medulla = (
@@ -5273,7 +5275,7 @@ plt.tight_layout()
         f"<b>MODEL</b>: {model_label} ({'large-only' if pair.small is None and pair.mode == 'mixed' else pair.mode})"
         + (f" <span style='color:#888'>{_route_note}</span>" if _route_note else "")
         + f" | <b>TONE</b>: {_tone}<br>"
-        f"<b>STATE</b>: {state} | <b>TRACE</b>: {trace:.1f} <code>{bar}</code>"
+        f"<b>STATE</b>: {state} | <b>TRACE</b>: {'?' if trace is None else f'{trace:.1f}'} <code>{bar}</code>"
         + (f" | a_str {_anti_str:.3f}" if mode == "anti" else "")
         + f"<br>"
         f"<b>TREND</b>: {ti} {trend_name} (avg {avg:.0f} | slope {slope:.0f})<br>"
@@ -5409,7 +5411,7 @@ plt.tight_layout()
 
     # Confidence badge — only show when Hessian trace was actually computed this turn
     # trace == 0.0 means short message skipped, NOT low confidence
-    if trace <= 0.0 or trace > 150:
+    if trace is None or trace <= 0.0 or trace > 150:
         _conf_badge = ""
     elif trace > 80:
         _conf_badge = (" <span style='font-size:.72em;color:#ffd740;"
@@ -7476,11 +7478,20 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
         try:
             _, _, _pre_slope = ctrl.trend()
             _trace_quality = (
-                trace > -50
+                trace is not None
+                and trace > -50
                 and ctrl.consec_patho == 0
                 and abs(_pre_slope) < 50
             )
-            consumers["learn_gate"] = {"ok": True, "gate_b_passed": _trace_quality}
+            _gate_skip_reason = (
+                "trace_unavailable" if trace is None
+                else "bad_trace" if not _trace_quality
+                else None
+            )
+            consumers["learn_gate"] = {
+                "ok": True, "gate_b_passed": _trace_quality,
+                "skip_reason": _gate_skip_reason,
+            }
         except Exception as e:
             consumers["learn_gate"] = {"ok": False, "error": str(e)}
 
