@@ -7522,6 +7522,7 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
             )
             log_entry = {
                 "turn": turn, "trace": trace, "mode": mode,
+                "user": "test injection", "response": "test response",
                 "absolute_floor_triggered": trace is not None and trace < _ABSOLUTE_FLOOR,
                 "sustained_negative_triggered": (
                     len(ctrl.all_traces) >= _SUSTAINED_COUNT and
@@ -7529,6 +7530,7 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
                 ),
                 "anchor_drift": _anchor_drift_val,
                 "trace_compute_ms": 0,
+                "flattery_score": 0.0, "slope": 0.0,
             }
             session_log.append(log_entry)
             consumers["session_log"] = {"ok": True, "entry": log_entry}
