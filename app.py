@@ -5967,6 +5967,35 @@ async def api_new():
     return JSONResponse({"ok": True, "sessions": sessions,
                          "history": [], "active_sid": new_sid})
 
+@api.post("/api/reset")
+async def api_reset():
+    """Full state reset for test seed independence.
+    Does everything /clear does, plus session clearing from /api/new."""
+    # ── /clear state ──
+    session_log.clear()
+    turn_count[0] = 0
+    trace_history_live.clear()
+    ctrl.history.clear()
+    ctrl.all_traces.clear()
+    ctrl.log.clear()
+    ctrl.mode = "lora"
+    ctrl.consec_patho = 0
+    ctrl.anti_count = 0
+    ctrl.session_anchor = None
+    ctrl.consec_flattery = 0
+    ctrl.manual_mode = None
+    ctrl.low_pct = 30
+    _code_ns.clear()
+    # ── pending trace ──
+    with _pending_trace_lock:
+        _pending_trace[0] = None
+    # ── session clearing (from /api/new) ──
+    with _session_lock:
+        _session_history.clear()
+    _active_session_ts[0] = None
+    _session_epoch[0] += 1
+    return JSONResponse({"ok": True, "turn_count": 0})
+
 @api.post("/api/fork")
 async def api_fork(data: dict = Body(...)):
     """Fork the conversation at a point: saves current session, starts a new session
@@ -6941,6 +6970,68 @@ async def api_export_all():
         content=content_bytes,
         media_type="text/markdown",
         headers={"Content-Disposition": f'attachment; filename="graceful_all_sessions_{ts}.md"'}
+    )
+
+
+# ── Export session data as zip ────────────────────────────────────────────────
+
+@api.get("/api/export")
+async def api_export_zip():
+    """Export traces, logs, ctrl state, and session data as a downloadable zip."""
+    import zipfile, socket
+
+    buf = _io_mod.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # ── log files (skip if missing) ──
+        for fname in ("traces.jsonl", "learn_decisions.jsonl", "trace_failures.jsonl"):
+            fpath = os.path.join(DATA_DIR, "logs", fname)
+            if os.path.isfile(fpath):
+                zf.write(fpath, fname)
+
+        # ── session_log snapshot ──
+        try:
+            zf.writestr("session_log.json", json.dumps(list(session_log), indent=2, default=str))
+        except Exception:
+            pass
+
+        # ── ctrl (SnobLine) state ──
+        try:
+            ctrl_snap = {
+                "mode":            ctrl.mode,
+                "all_traces":      [float(t) for t in ctrl.all_traces],
+                "log":             ctrl.log,
+                "consec_patho":    ctrl.consec_patho,
+                "session_anchor":  float(ctrl.session_anchor) if ctrl.session_anchor is not None else None,
+                "anti_count":      ctrl.anti_count,
+                "manual_mode":     ctrl.manual_mode,
+            }
+            zf.writestr("ctrl_state.json", json.dumps(ctrl_snap, indent=2, default=str))
+        except Exception:
+            pass
+
+        # ── manifest ──
+        try:
+            manifest = {
+                "hostname":          socket.gethostname(),
+                "timestamp":         datetime.datetime.now().isoformat(),
+                "turn_count":        turn_count[0],
+                "model":             MODEL,
+                "trace_sync_mode":   TRACE_SYNC_MODE[0],
+                "online_learning":   online_learning[0],
+            }
+            zf.writestr("manifest.json", json.dumps(manifest, indent=2, default=str))
+        except Exception:
+            pass
+
+    buf.seek(0)
+    hostname = re.sub(r"[^a-zA-Z0-9_-]", "_", socket.gethostname())
+    ts = datetime.datetime.now().strftime("%Y-%m-%d")
+    zip_name = f"graceful_export_{hostname}_{ts}.zip"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
     )
 
 

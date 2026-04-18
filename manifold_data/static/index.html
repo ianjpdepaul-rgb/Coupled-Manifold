@@ -712,6 +712,11 @@ input[type=range]{accent-color:var(--primary)!important;}
       <button class="s-btn" id="mem-btn">Refresh</button>
       <pre id="mem-out"></pre>
     </div>
+    <div class="s-sec">
+      <div class="s-lbl">Export Session Data</div>
+      <div class="s-sub">download traces, logs, and session data as a zip</div>
+      <button class="s-btn pri" id="export-data-btn" onclick="if(confirm('Export session data including conversation history?')) window.location.href='/api/export'">Export</button>
+    </div>
   </div>
 </div>
 <div id="slash-pop"></div>

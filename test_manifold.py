@@ -59,9 +59,9 @@ def wait_rate_limit():
 
 
 def new_session():
-    """Start a fresh session."""
-    r = httpx.post(f"{BASE}/api/new", timeout=15)
-    assert r.status_code == 200, f"/api/new failed: {r.status_code}"
+    """Start a fresh session with full state reset."""
+    r = httpx.post(f"{BASE}/api/reset", timeout=15)
+    assert r.status_code == 200, f"/api/reset failed: {r.status_code}"
     time.sleep(1)  # let server settle
 
 
