@@ -2061,10 +2061,14 @@ def should_suggest_redirect() -> tuple:
 def build_interoceptive_block():
     if not trace_history_live: return ""
     recent = trace_history_live[-8:]
-    rhythm = " ".join(("▲" if t["trace"]>0 else "▽")+str(abs(int(t["trace"]//100))) for t in recent)
-    if len(recent) >= 3:
-        vals  = [t["trace"] for t in recent]
-        slope = (vals[-1]-vals[0])/len(vals)
+    rhythm = " ".join(
+        ("▲" if t["trace"]>0 else "▽")+str(abs(int(t["trace"]//100)))
+        if t["trace"] is not None else "·"
+        for t in recent
+    )
+    _valid_vals = [t["trace"] for t in recent if t["trace"] is not None]
+    if len(_valid_vals) >= 3:
+        slope = (_valid_vals[-1]-_valid_vals[0])/len(_valid_vals)
         momentum = "collapsing" if slope < -30 else "expanding" if slope > 30 else "stable"
     else:
         slope, momentum = 0.0, "initialising"
@@ -2072,7 +2076,7 @@ def build_interoceptive_block():
     anxiety = "critical" if patho>=2 else "elevated" if patho==1 else "none"
     drift   = compute_drift(session_log[-1]["response"] if session_log else "") if session_log else 0.0
     drift_s = f"{drift:.2f}" if drift>=0 else "unknown"
-    avg_trace = sum(t["trace"] for t in recent)/len(recent) if recent else 0
+    avg_trace = sum(_valid_vals)/len(_valid_vals) if _valid_vals else 0
     flattery = "none"
     _last_flattery = session_log[-1].get("flattery_score", 0.0) if session_log else 0.0
     if _last_flattery > 0.8:
