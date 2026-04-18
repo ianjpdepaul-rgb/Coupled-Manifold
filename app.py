@@ -7430,6 +7430,171 @@ MANIFEST_HTML = _load_html()
 
 
 # ═══════════════════════════════════════════════════
+# TEST INJECTION ENDPOINT (opt-in via GRACEFUL_TEST_MODE=1)
+# ═══════════════════════════════════════════════════
+
+if os.environ.get("GRACEFUL_TEST_MODE") == "1":
+    import copy as _copy
+
+    @api.post("/api/_test/trace_inject")
+    async def _test_trace_inject(body: dict):
+        """Inject a synthetic trace value through all real consumers.
+        Only registered when GRACEFUL_TEST_MODE=1. Never available in production.
+        Restores all mutated state after each call."""
+
+        trace = body.get("trace")     # float | None
+        turn  = body.get("turn", 1)   # int
+
+        # -- Snapshot state for restoration ---
+        _saved_ctrl    = _copy.deepcopy(ctrl)
+        _saved_thl_len = len(trace_history_live)
+        _saved_sl_len  = len(session_log)
+        _saved_tc      = turn_count[0]
+
+        consumers = {}
+
+        # -- 1. SnobLine.step --
+        try:
+            mode = ctrl.step(trace, turn)
+            consumers["snobline_step"] = {"ok": True, "mode": mode}
+        except Exception as e:
+            consumers["snobline_step"] = {"ok": False, "error": str(e)}
+            mode = "lora"
+
+        # -- 2. SnobLine.get_anti_strength --
+        try:
+            a_str = ctrl.get_anti_strength(trace)
+            consumers["get_anti_strength"] = {"ok": True, "value": a_str}
+        except Exception as e:
+            consumers["get_anti_strength"] = {"ok": False, "error": str(e)}
+
+        # -- 3. Learning gate (Gate B: trace quality) --
+        try:
+            _, _, _pre_slope = ctrl.trend()
+            _trace_quality = (
+                trace > -50
+                and ctrl.consec_patho == 0
+                and abs(_pre_slope) < 50
+            )
+            consumers["learn_gate"] = {"ok": True, "gate_b_passed": _trace_quality}
+        except Exception as e:
+            consumers["learn_gate"] = {"ok": False, "error": str(e)}
+
+        # -- 4. Status string build --
+        try:
+            turn_count[0] = turn
+            trace_history_live.append({
+                "turn": turn,
+                "trace": round(trace, 1) if trace is not None else None,
+                "mode": mode, "model": "test", "drift": -1.0,
+            })
+            status_str = _get_status_str()
+            consumers["status_str"] = {"ok": True, "value": status_str}
+        except Exception as e:
+            consumers["status_str"] = {"ok": False, "error": str(e)}
+
+        # -- 5. Medulla build --
+        try:
+            trend_name, avg, slope = ctrl.trend()
+            low_t, high_t = ctrl.get_thresholds()
+            icon  = "\U0001f7e2" if mode == "lora" else "\U0001f534"
+            state_label = "CONSTRUCTIVE" if mode == "lora" else "ROUGHENING"
+            bar   = "\u2588" * min(max(int(abs(trace) / 100), 1), 30) if trace is not None else "\u00b7"
+            _trace_display = f"{trace:.1f}" if trace is not None else "?"
+            medulla = (
+                f"<b>{icon} MEDULLA</b> t{turn} -- "
+                f"0.0s gen / 0.0s trace / 0.0s total<br>"
+                f"<b>MODEL</b>: test (test)<br>"
+                f"<b>STATE</b>: {state_label} | <b>TRACE</b>: {_trace_display} <code>{bar}</code>"
+                f"<br><b>TREND</b>: {trend_name} (avg {avg:.0f} | slope {slope:.0f})<br>"
+                f"<b>THRESHOLDS</b>: low {low_t:.0f} / high {high_t:.0f}"
+            )
+            consumers["medulla"] = {"ok": True, "value": medulla}
+        except Exception as e:
+            consumers["medulla"] = {"ok": False, "error": str(e)}
+
+        # -- 6. Session log entry --
+        try:
+            _anchor_drift_val = (
+                round(float(np.mean(ctrl.all_traces[-5:])) - ctrl.session_anchor, 1)
+                if ctrl.session_anchor is not None and len(ctrl.all_traces) >= 8
+                else None
+            )
+            log_entry = {
+                "turn": turn, "trace": trace, "mode": mode,
+                "absolute_floor_triggered": trace is not None and trace < _ABSOLUTE_FLOOR,
+                "sustained_negative_triggered": (
+                    len(ctrl.all_traces) >= _SUSTAINED_COUNT and
+                    all(t < _SUSTAINED_FLOOR for t in ctrl.all_traces[-_SUSTAINED_COUNT:])
+                ),
+                "anchor_drift": _anchor_drift_val,
+                "trace_compute_ms": 0,
+            }
+            session_log.append(log_entry)
+            consumers["session_log"] = {"ok": True, "entry": log_entry}
+        except Exception as e:
+            consumers["session_log"] = {"ok": False, "error": str(e)}
+
+        # -- 7. traces.jsonl serialization (test file, not production) --
+        try:
+            _trace_entry = json.dumps({
+                "session": "test", "turn": turn,
+                "trace": trace, "mode": mode, "model": "test",
+                "trace_compute_ms": 0,
+                "absolute_floor_triggered": trace is not None and trace < _ABSOLUTE_FLOOR,
+            })
+            os.makedirs(f"{DATA_DIR}/logs", exist_ok=True)
+            with open(f"{DATA_DIR}/logs/traces_test.jsonl", "a") as _f:
+                _f.write(_trace_entry + "\n")
+            consumers["traces_jsonl"] = {"ok": True, "entry": json.loads(_trace_entry)}
+        except Exception as e:
+            consumers["traces_jsonl"] = {"ok": False, "error": str(e)}
+
+        # -- 8. Confidence badge --
+        try:
+            if trace is None or trace <= 0.0 or trace > 150:
+                _conf_badge = ""
+            elif trace > 80:
+                _conf_badge = "uncertain"
+            else:
+                _conf_badge = "low_confidence"
+            consumers["confidence_badge"] = {"ok": True, "value": _conf_badge}
+        except Exception as e:
+            consumers["confidence_badge"] = {"ok": False, "error": str(e)}
+
+        # -- 9. build_interoceptive_block --
+        try:
+            intero = build_interoceptive_block()
+            consumers["interoceptive_block"] = {"ok": True, "length": len(intero)}
+        except Exception as e:
+            consumers["interoceptive_block"] = {"ok": False, "error": str(e)}
+
+        # -- 10. Temp adjustment (trace_history_live trace reads) --
+        try:
+            if len(trace_history_live) >= 4:
+                tv = [t["trace"] for t in trace_history_live[-4:]]
+                tslope = (tv[-1] - tv[0]) / max(len(tv) - 1, 1)
+                consumers["temp_adjust"] = {"ok": True, "tslope": tslope}
+            else:
+                consumers["temp_adjust"] = {"ok": True, "tslope": None, "note": "not enough history"}
+        except Exception as e:
+            consumers["temp_adjust"] = {"ok": False, "error": str(e)}
+
+        # -- Restore state --
+        turn_count[0] = _saved_tc
+        trace_history_live[:] = trace_history_live[:_saved_thl_len]
+        session_log[:] = session_log[:_saved_sl_len]
+        for attr in vars(_saved_ctrl):
+            setattr(ctrl, attr, getattr(_saved_ctrl, attr))
+
+        return JSONResponse({
+            "trace_input": trace,
+            "turn_input": turn,
+            "consumers": consumers,
+        })
+
+
+# ═══════════════════════════════════════════════════
 # LAUNCH
 # ═══════════════════════════════════════════════════
 
