@@ -2029,7 +2029,9 @@ def should_suggest_redirect() -> tuple:
     if len(trace_history_live) < 5:
         return False, ""
     recent_tv = trace_history_live[-5:]
-    traces = [t["trace"] for t in recent_tv]
+    traces = [t["trace"] for t in recent_tv if t["trace"] is not None]
+    if len(traces) < 3:
+        return False, ""
     # Monotonically declining (with small tolerance)
     if not all(traces[i] <= traces[i-1] + 20 for i in range(1, len(traces))):
         return False, ""
@@ -2840,7 +2842,8 @@ def chat(user_msg, history):
                         topics.add(w)
             top_topics = list(topics)[:8]
             n_turns = len(session_log)
-            avg_trace = round(sum(t.get('trace', 0) for t in session_log[-10:]) / max(1, min(10, len(session_log))), 0)
+            _sum_traces = [t.get('trace') for t in session_log[-10:] if t.get('trace') is not None]
+            avg_trace = round(sum(_sum_traces) / max(1, len(_sum_traces)), 0) if _sum_traces else 0
             reply = (
                 f"**Session summary** ({n_turns} turns, avg trace {avg_trace:.0f})\n\n"
                 f"Key topics: {', '.join(top_topics) if top_topics else 'varied'}\n\n"
@@ -2874,11 +2877,16 @@ def chat(user_msg, history):
             hedge_words = ["might", "may", "could", "possibly", "perhaps", "i think", "i believe",
                            "not sure", "uncertain", "unclear", "probably", "seems", "appears"]
             hedges_found = [w for w in hedge_words if w in last_response.lower()]
-            last_trace = session_log[-1].get("trace", 0) if session_log else 0
-            confidence = "high" if last_trace > 150 else "medium" if last_trace > 80 else "low"
+            last_trace = session_log[-1].get("trace") if session_log else None
+            if last_trace is not None:
+                confidence = "high" if last_trace > 150 else "medium" if last_trace > 80 else "low"
+                _trace_display = f"`{last_trace:.0f}`"
+            else:
+                confidence = "unavailable"
+                _trace_display = "`?` (no measurement)"
             reply = (
                 f"**Last response check:**\n\n"
-                f"Trace score: `{last_trace:.0f}` → confidence: **{confidence}**\n\n"
+                f"Trace score: {_trace_display} → confidence: **{confidence}**\n\n"
             )
             if hedges_found:
                 reply += f"Uncertainty markers found: `{', '.join(set(hedges_found))}`\n\n"
@@ -2922,7 +2930,8 @@ def chat(user_msg, history):
             reply = "Not enough turns yet for a mood reading — keep going."
         else:
             recent = session_log[-10:]
-            avg_trace = sum(t.get("trace", 0) for t in recent) / len(recent)
+            _mood_traces = [t.get("trace") for t in recent if t.get("trace") is not None]
+            avg_trace = sum(_mood_traces) / len(_mood_traces) if _mood_traces else 0
             slope_vals = [t.get("slope", 0) for t in recent]
             avg_slope = sum(slope_vals) / len(slope_vals) if slope_vals else 0
             # Read trace-based mood
@@ -4772,8 +4781,8 @@ plt.tight_layout()
     if temp_override[0] > 0:
         temp = float(temp_override[0])
     elif len(trace_history_live) >= 4:
-        tv     = [t["trace"] for t in trace_history_live[-4:]]
-        tslope = (tv[-1]-tv[0]) / max(len(tv) - 1, 1)
+        tv     = [t["trace"] for t in trace_history_live[-4:] if t["trace"] is not None]
+        tslope = (tv[-1]-tv[0]) / max(len(tv) - 1, 1) if len(tv) >= 2 else 0
         if tslope < -30:
             temp      = min(1.1, 0.7 + abs(tslope)/200)
             top_p_val = min(0.99, 0.95 + abs(tslope)/2000)
@@ -6455,15 +6464,15 @@ async def api_export_csv():
         resp = re.sub(r'<[^>]+>', '', resp)          # strip HTML tags
         resp = re.sub(r'\s+', ' ', resp).strip()      # normalize whitespace
         resp_preview = resp[:500] + ("…" if len(resp) > 500 else "")
-        t = row.get("trace", 0) or 0
-        if t != 0:
+        t = row.get("trace")
+        if t is not None:
             total_trace += t; n_trace += 1
         clean_row = {
             "turn": row.get("turn", ""),
             "timestamp": row.get("timestamp", ""),
             "user": (row.get("user", "") or "")[:500],
             "response_preview": resp_preview,
-            "trace": f"{t:.1f}" if t else "",
+            "trace": f"{t:.1f}" if t is not None else "",
             "mode": row.get("mode", ""),
             "model": row.get("model", MODEL),
             "gen_time_s": f"{row.get('gen_time',0):.2f}" if row.get("gen_time") else "",
