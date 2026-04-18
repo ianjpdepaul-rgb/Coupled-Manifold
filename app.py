@@ -133,6 +133,7 @@ def get_thinking_phrase():
     if not trace_history_live:
         return random.choice(THINKING_NEUTRAL)
     last = trace_history_live[-1]["trace"]
+    if last is None: return random.choice(THINKING_NEUTRAL)
     if last > 200:   return random.choice(THINKING_HIGH)
     elif last < -100: return random.choice(THINKING_LOW)
     return random.choice(THINKING_NEUTRAL)
@@ -5402,7 +5403,7 @@ plt.tight_layout()
         threading.Thread(target=auto_summarize_session, daemon=True).start()
 
     term_flag = f" | ⚠️ {term_reason}" if should_term else ""
-    print(f"  t{turn_count[0]} | {model_label} | trace {trace:.0f} | {mode} | {trend_name} | "
+    print(f"  t{turn_count[0]} | {model_label} | trace {'?' if trace is None else f'{trace:.0f}'} | {mode} | {trend_name} | "
           f"gen {gen_time:.1f}s | hess {trace_time:.1f}s | drift {_drift:.2f}"
           + (" | 🌐" if searched else "") + term_flag)
 
@@ -5838,6 +5839,8 @@ def _stream_chat(user_msg, base_history, loop, q):
                    "history": [_last_msg] if _last_msg else []}), loop)
         _sent_done[0] = True
     except Exception as _worker_ex:
+        import traceback as _tb_mod
+        _tb_mod.print_exc()
         if not _sent_done[0]:
             asyncio.run_coroutine_threadsafe(
                 q.put({"t": "err", "v": f"stream error: {_worker_ex}",
