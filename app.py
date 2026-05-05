@@ -6134,8 +6134,11 @@ async def api_health():
 async def api_init():
     # Use the in-memory session ID (set on first save) as active_sid — it's the real filename
     active_sid = _active_session_ts[0]  # always return current session ID; None only if never set
+    with _session_lock:
+        _hist_snap = [m for m in _session_history if m.get("role") != "system"]
+        _has_hist = bool(_session_history)
     return JSONResponse({
-        "history":          [m for m in _session_history if m.get("role") != "system"],
+        "history":          _hist_snap,
         "sessions":         _list_sessions(),
         "status":           _get_status_str(),
         "model":            MODEL,
@@ -6153,7 +6156,7 @@ async def api_init():
         "active_persona":   _active_persona[0]["name"] if _active_persona[0] else None,
         "active_sid":       active_sid,
         "vision_tokens":    _VISION_TOKENS,
-        "session_restored": bool(_today_sid and _session_history),
+        "session_restored": bool(_today_sid and _has_hist),
     })
 
 @api.post("/api/chat")
@@ -6169,9 +6172,12 @@ async def api_chat(request: Request):
     _last_gen_time[0] = time.time()
     _client_hist = data.get("history")
     # If server session is empty (just created by /api/new), ignore stale client history
-    if not _session_history and _client_hist:
+    with _session_lock:
+        _server_empty = not _session_history
+        _server_hist = list(_session_history)
+    if _server_empty and _client_hist:
         _client_hist = []
-    base_hist = list(_client_hist) if _client_hist is not None else list(_session_history)
+    base_hist = list(_client_hist) if _client_hist is not None else _server_hist
     rl = (data.get("response_length") or "M").upper()
     if rl in ("S", "M", "L"):
         _response_length[0] = rl
@@ -6182,7 +6188,8 @@ async def api_chat(request: Request):
 
 @api.post("/api/regen")
 async def api_regen():
-    hist = list(_session_history)
+    with _session_lock:
+        hist = list(_session_history)
     while hist and hist[-1].get("role") == "assistant":
         hist.pop()
     if not hist or hist[-1].get("role") != "user":
@@ -6365,7 +6372,9 @@ async def api_load_session(session_id: str):
     # Build a minimal status string from the loaded session
     s = mem.status()
     _loaded_status = f"t{n_user} · ? · lora · {s['corpus_chunks']}c · {s['archive_turns']}a"
-    return JSONResponse({"history": [m for m in _session_history if m.get("role") != "system"], "status": _loaded_status})
+    with _session_lock:
+        _hist_out = [m for m in _session_history if m.get("role") != "system"]
+    return JSONResponse({"history": _hist_out, "status": _loaded_status})
 
 @api.get("/api/history_page")
 async def api_history_page(before: int = 0, page: int = 20):
@@ -6765,7 +6774,9 @@ async def api_export_notebook():
 
     _code_fence = re.compile(r'```(?:python|py)\n(.*?)```', re.DOTALL)
 
-    for msg in _session_history:
+    with _session_lock:
+        _hist_snap = list(_session_history)
+    for msg in _hist_snap:
         role = msg.get("role", "")
         raw = (msg.get("content") or "")
         # Strip medulla HTML
