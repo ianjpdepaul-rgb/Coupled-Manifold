@@ -1135,6 +1135,9 @@ def execute_python(code: str, _persist: dict = None) -> tuple[str, str]:
         stdout_buf = _io_mod.StringIO()
         stderr_buf = _io_mod.StringIO()
 
+        # TRUST BOUNDARY: exec() runs user code in a restricted namespace (no __builtins__).
+        # This is a local-only app — the user is running code on their own machine.
+        # No filesystem sandbox; code can access files and network if it imports os/socket.
         try:
             with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
                 exec(compile(code, '<run>', 'exec'), ns)
