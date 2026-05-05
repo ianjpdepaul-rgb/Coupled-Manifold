@@ -6206,10 +6206,6 @@ async def api_shutdown():
 @api.post("/api/save")
 async def api_save(request: Request):
     """Lightweight save — called by beforeunload, keeps session active."""
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
     # Snapshot sid+hist together under lock to prevent beacon/switch race
     with _session_lock:
         _snap_sid = _active_session_ts[0]
