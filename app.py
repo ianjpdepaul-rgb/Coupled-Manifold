@@ -5623,20 +5623,6 @@ plt.tight_layout()
     else:
         drift_badge = ""
 
-    # Confidence badge — only show when Hessian trace was actually computed this turn
-    # trace == 0.0 means short message skipped, NOT low confidence
-    # Also skip on short responses — same rationale as drift
-    if _resp_len < 30 or not _trace_valid(trace) or trace <= 0.0 or trace > 150:
-        _conf_badge = ""
-    elif trace > 80:
-        _conf_badge = (" <span style='font-size:.72em;color:#ffd740;"
-                       "border:1px solid rgba(255,215,64,.3);border-radius:3px;"
-                       "padding:1px 5px'>~ uncertain</span>")
-    else:
-        _conf_badge = (" <span style='font-size:.72em;color:#ff9800;"
-                       "border:1px solid rgba(255,152,0,.4);border-radius:3px;"
-                       "padding:1px 5px'>⚠ low confidence</span>")
-
     # ── Auto code execution ──────────────────────────────────────
     if not _tools_used:   # don't double-execute if tool:run already ran
         response, _ran_code = detect_and_run_code(response)
@@ -5740,7 +5726,7 @@ plt.tight_layout()
         except Exception:
             pass
 
-    body = _patho_wrap_open + response + term_warning + drift_badge + _conf_badge + _dream_marker + _patho_wrap_close
+    body = _patho_wrap_open + response + term_warning + drift_badge + _dream_marker + _patho_wrap_close
     _medulla_full = "<!--MED-->" + medulla
     history.append({"role": "assistant",
                     "content": body + (_medulla_full if show_medulla[0] else "")})

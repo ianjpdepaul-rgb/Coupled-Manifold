@@ -466,9 +466,6 @@ body.focus-mode #focus-exit-btn{display:block;}
 .url-offer-btn:hover{color:var(--text);border-color:#484848;}
 .url-offer-btn.pri{background:var(--pink-dim);border-color:rgba(240,52,104,.3);color:var(--pink);}
 
-/* ── Reading time badge (Feature 9) ── */
-.read-time{font-size:.7em;color:var(--text4);text-align:right;margin:-4px 4px 4px 0;}
-
 /* ── Accessibility (Feature 6) ── */
 body.hc{--bg:#000;--bg2:#111;--text1:#fff;--text2:#eee;--border2:#fff;}
 body.large-text{--font-size:18px;}
@@ -3707,27 +3704,6 @@ document.addEventListener("DOMContentLoaded",function(){
     if(rows.length){
       var lastBub=rows[rows.length-1].querySelector(".bubble");
       if(lastBub)_checkWordCloud(lastBub);
-    }
-  };
-
-  // ════════════════════════════════════════════════════════════════
-  // FEATURE 9: Reading time / word count badge on long responses
-  // ════════════════════════════════════════════════════════════════
-  var _origFinalizeStreamRt=finalizeStream;
-  finalizeStream=function(full,idx){
-    _origFinalizeStreamRt(full,idx);
-    var rows=getMW().querySelectorAll(".msg-row.assistant");
-    if(!rows.length)return;
-    var lastRow=rows[rows.length-1];
-    var bubbleEl=lastRow.querySelector(".bubble");
-    if(!bubbleEl)return;
-    var words=bubbleEl.innerText.trim().split(/\s+/).length;
-    if(words>200){
-      var mins=Math.ceil(words/200);
-      var badge=document.createElement("div");
-      badge.className="read-time";
-      badge.textContent=words+" words · "+mins+" min read";
-      bubbleEl.parentNode.insertBefore(badge,bubbleEl.nextSibling);
     }
   };
 
