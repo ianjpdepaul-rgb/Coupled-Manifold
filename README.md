@@ -95,15 +95,31 @@ The table above shows the most common commands. Type `/help` in the chat for the
 
 ## Features
 
+- **Geometric self-monitoring** — real-time Hessian trace measurement of the model's reasoning. The medulla bar above the chat shows the live geometric state: trace value, mode, drift, pathology indicators.
+- **Online learning with safety gate (LoRA + anti-LoRA)** — adapter weights update from your conversations, but only when the geometric monitor confirms healthy learning conditions. Anti-LoRA adapter applies roughening when the system detects pathological convergence (basin lock, shortcut formation).
+- **SnobLine controller** — adaptive switching between learning and intervention modes based on trace dynamics. The system can refuse to learn from a conversation if the geometry indicates the conversation is unhealthy.
+- **Interoceptive feedback** — the model receives a structured self-report of its own geometric state in context each turn (heartbeat, momentum, anxiety, drift, stability instructions).
 - **Streaming chat** — responses appear word by word
-- **Hessian trace monitoring** — real-time curvature measurement of model attention, the core differentiator from other local LLM apps
 - **Think mode** — model reasons step by step before answering
 - **Memory & corpus RAG** — retrieves relevant context from saved notes and documents
-- **LoRA online learning** — adapter weights update from your conversations
-- **Anti-LoRA pathological correction** — automatic geometric intervention when attention collapses
-- **CSV / JSON export** — download full session transcripts
+- **Knowledge graph (Borgesian Map)** — visual map of concepts and thinkers from your conversations and corpus
+- **CSV / JSON / Markdown export** — download full session transcripts including geometric trace data
 - **Voice TTS** — text-to-speech readback of responses
 - **Drag-and-drop files** — drop PDFs, documents, or images into the chat
+- **Personas and modes** — configurable personality, plus session-scoped mode shifts (`/socratic`, `/antagonist`, `/compress`, `/eli5`, etc.)
+
+---
+
+## How it works
+
+Underneath the chat interface, the system measures the curvature of its own reasoning in real time — a number called the Hessian trace. When the geometry of the model's attention drifts toward narrow, repetitive patterns (basin collapse, shortcut formation), the system detects it and adapts:
+
+1. **Detection** — The Hessian trace is computed periodically during inference. The SnobLine controller watches the trace trajectory.
+2. **Gate** — When the geometry indicates pathological convergence, online learning is suppressed. The system refuses to absorb patterns from unhealthy conversations.
+3. **Intervention** — The anti-LoRA adapter applies counter-roughening to push the loss landscape back toward healthy curvature.
+4. **Feedback** — The model receives a structured description of its own geometric state in context each turn, allowing it to be aware of and respond to its own internal dynamics.
+
+This is a research deployment of the Coupled Manifold Safety Framework. The framework's claim is that AI safety is best understood as a geometric property of the human-AI coupled system, not as an external constraint imposed on the model. The full theoretical paper is on ResearchGate (linked below).
 
 ---
 
