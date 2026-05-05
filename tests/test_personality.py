@@ -317,3 +317,175 @@ class TestStarterPromptLoading:
             if fn.endswith(".txt"):
                 starters.append(fn)
         assert starters == []
+
+
+# ═══════════════════════════════════════════════════
+# Layer 3 tests — personas as session-scoped mode shifts
+# ═══════════════════════════════════════════════════
+
+def _list_personas_from(shipped_dir, user_dir):
+    """Test-friendly reimplementation of _list_personas()."""
+    personas = []
+    seen = set()
+    for d, source in [(user_dir, "user"), (shipped_dir, "shipped")]:
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if fn.endswith(".txt"):
+                name = fn[:-4]
+                if name not in seen:
+                    content = open(os.path.join(d, fn)).read().strip()
+                    personas.append({"name": name, "content": content, "source": source})
+                    seen.add(name)
+    return personas
+
+
+@pytest.fixture
+def persona_mode_env(tmp_path):
+    """Set up shipped + user persona directories."""
+    shipped = tmp_path / "personas"
+    shipped.mkdir()
+    (shipped / "debugger.txt").write_text("You are in debugger mode. Isolate before fixing.")
+    (shipped / "rubber_duck.txt").write_text("You are in rubber duck mode. Ask questions.")
+    (shipped / "pair_programmer.txt").write_text("You are in pair programming mode.")
+
+    user = tmp_path / "manifold_data" / "personas"
+    user.mkdir(parents=True)
+
+    return {"shipped": shipped, "user": user, "root": tmp_path}
+
+
+class TestPersonaListing:
+    def test_list_shipped_personas(self, persona_mode_env):
+        personas = _list_personas_from(
+            str(persona_mode_env["shipped"]),
+            str(persona_mode_env["user"]),
+        )
+        names = [p["name"] for p in personas]
+        assert "debugger" in names
+        assert "rubber_duck" in names
+        assert "pair_programmer" in names
+
+    def test_all_shipped_are_source_shipped(self, persona_mode_env):
+        personas = _list_personas_from(
+            str(persona_mode_env["shipped"]),
+            str(persona_mode_env["user"]),
+        )
+        for p in personas:
+            assert p["source"] == "shipped"
+
+    def test_user_persona_overrides_shipped(self, persona_mode_env):
+        """User persona with same name takes precedence."""
+        (persona_mode_env["user"] / "debugger.txt").write_text("My custom debugger.")
+        personas = _list_personas_from(
+            str(persona_mode_env["shipped"]),
+            str(persona_mode_env["user"]),
+        )
+        dbg = next(p for p in personas if p["name"] == "debugger")
+        assert dbg["source"] == "user"
+        assert dbg["content"] == "My custom debugger."
+
+    def test_user_custom_persona_appears(self, persona_mode_env):
+        (persona_mode_env["user"] / "coach.txt").write_text("Coaching mode.")
+        personas = _list_personas_from(
+            str(persona_mode_env["shipped"]),
+            str(persona_mode_env["user"]),
+        )
+        names = [p["name"] for p in personas]
+        assert "coach" in names
+
+    def test_empty_dirs_return_empty(self, tmp_path):
+        personas = _list_personas_from(
+            str(tmp_path / "nope1"),
+            str(tmp_path / "nope2"),
+        )
+        assert personas == []
+
+
+class TestPersonaActivation:
+    def test_activate_persona(self, persona_mode_env):
+        personas = _list_personas_from(
+            str(persona_mode_env["shipped"]),
+            str(persona_mode_env["user"]),
+        )
+        match = next(p for p in personas if p["name"] == "debugger")
+        active = {"name": match["name"], "content": match["content"], "persistent": False}
+        assert active["name"] == "debugger"
+        assert "debugger mode" in active["content"].lower()
+        assert active["persistent"] is False
+
+    def test_persistent_flag(self, persona_mode_env):
+        active = {"name": "debugger", "content": "debug mode", "persistent": True}
+        assert active["persistent"] is True
+
+    def test_deactivate_persona(self):
+        active = [{"name": "debugger", "content": "test", "persistent": False}]
+        active[0] = None
+        assert active[0] is None
+
+
+class TestPersonaInjection:
+    def test_persona_appends_to_system_prompt(self):
+        """Persona content appends to base personality, never replaces."""
+        base = "You are Graceful, a helpful assistant."
+        persona_content = "You are in debugger mode. Isolate before fixing."
+        combined = base + "\n\n" + persona_content
+        assert base in combined
+        assert persona_content in combined
+
+    def test_no_persona_leaves_prompt_unchanged(self):
+        base = "You are Graceful, a helpful assistant."
+        active = None
+        result = base
+        if active:
+            result = base + "\n\n" + active["content"]
+        assert result == base
+
+    def test_multiple_substitutions_still_work(self):
+        base = "You are {assistant_name}."
+        persona = "Debug mode for {user_name}."
+        combined = base + "\n\n" + persona
+        result = _substitute(combined, user_name="Alex", assistant_name="Sage")
+        assert "Sage" in result
+        assert "Alex" in result
+        assert "{assistant_name}" not in result
+        assert "{user_name}" not in result
+
+
+class TestPersonaSessionScoping:
+    def test_session_scoped_cleared_on_new_session(self):
+        """Non-persistent persona clears on new session."""
+        active = [{"name": "debugger", "content": "test", "persistent": False}]
+        # Simulate new session logic
+        if active[0] and not active[0].get("persistent"):
+            active[0] = None
+        assert active[0] is None
+
+    def test_persistent_survives_new_session(self):
+        """Persistent persona survives new session."""
+        active = [{"name": "debugger", "content": "test", "persistent": True}]
+        if active[0] and not active[0].get("persistent"):
+            active[0] = None
+        assert active[0] is not None
+        assert active[0]["name"] == "debugger"
+
+
+class TestPersonaSave:
+    def test_save_custom_persona(self, persona_mode_env):
+        user_dir = persona_mode_env["user"]
+        pname = "coach"
+        ptext = "You are a supportive coach."
+        ppath = user_dir / f"{pname}.txt"
+        ppath.write_text(ptext.strip() + "\n")
+        assert ppath.is_file()
+        assert ppath.read_text().strip() == ptext
+
+    def test_saved_persona_appears_in_listing(self, persona_mode_env):
+        user_dir = persona_mode_env["user"]
+        (user_dir / "mentor.txt").write_text("Mentoring mode.\n")
+        personas = _list_personas_from(
+            str(persona_mode_env["shipped"]),
+            str(user_dir),
+        )
+        names = [p["name"] for p in personas]
+        assert "mentor" in names

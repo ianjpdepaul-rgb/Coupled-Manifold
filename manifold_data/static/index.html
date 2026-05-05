@@ -631,6 +631,7 @@ input[type=range]{accent-color:var(--primary)!important;}
       <button id="tts-btn" title="Read aloud (TTS)">&#x1F50A;</button>
       <button id="sound-btn" title="Sound effects (chime on response)">&#x1F507;</button>
       <button id="theme-btn" title="Theme editor">&#9881; Theme</button>
+      <span id="persona-badge" title="Active persona" style="display:none;font-size:.68em;color:#a78bfa;font-family:var(--mono);border:1px solid rgba(167,139,250,.3);border-radius:4px;padding:2px 6px;flex-shrink:0;cursor:pointer;background:rgba(167,139,250,.08)"></span>
       <span id="temp-badge" title="Temperature — adjust in Settings" style="font-size:.68em;color:var(--text3);font-family:var(--mono);border:1px solid var(--border2);border-radius:4px;padding:2px 6px;flex-shrink:0;cursor:default">&#x3C4; 0.0</span>
       <span id="trace-pill" style="cursor:default;flex-shrink:0"></span>
       <div id="status-strip"></div>
@@ -2140,6 +2141,8 @@ async function init(){
     var tsl2=document.getElementById("temp-sl");if(tsl2)tsl2.value=_tv;
     var td2=document.getElementById("temp-disp");if(td2&&typeof _tempMood==="function")td2.textContent=_tv.toFixed(2)+" — "+_tempMood(_tv);
     var _tbadge=document.getElementById("temp-badge");if(_tbadge)_tbadge.textContent="\u03c4 "+_tv.toFixed(1);
+    var _pb=document.getElementById("persona-badge");
+    if(_pb){if(d.active_persona){_pb.textContent="\u25C8 "+d.active_persona;_pb.style.display="";}else{_pb.style.display="none";}}
     if(d.status)_setTracePill(d.status);
     renderHistory();_persistSession("init");
     _updateResumeBtn();
@@ -2321,6 +2324,16 @@ document.addEventListener("DOMContentLoaded",function(){
   document.getElementById("sys-clear").onclick=function(){
     document.getElementById("sys-prompt").value="";
     fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_prompt:""})}).then(function(){_spFlash("reverted to default");});
+  };
+  var _pbBtn=document.getElementById("persona-badge");
+  if(_pbBtn)_pbBtn.onclick=function(){
+    if(confirm("Deactivate persona?")){
+      fetch("/api/persona/deactivate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})}).then(function(){
+        _pbBtn.style.display="none";
+        _statusStrip.set('persona','persona off','sp-gray',{title:'Persona deactivated'});
+        setTimeout(function(){_statusStrip.clear('persona');},3000);
+      });
+    }
   };
   document.getElementById("index-btn").onclick=async function(){
     var p=document.getElementById("corpus-path").value.trim();if(!p)return;

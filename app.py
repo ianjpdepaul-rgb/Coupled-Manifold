@@ -1588,6 +1588,33 @@ _user_name      = [""]         # optional — injected into system prompt as "Yo
 _assistant_name = ["Graceful"] # configurable assistant name, shown in UI header
 online_learning = [True]   # user toggle: online LoRA updates after good turns
 
+# ── Persona (Layer 3) — session-scoped mode shifts ───────────────────────────
+_PERSONAS_SHIPPED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "personas")
+_PERSONAS_USER_DIR    = os.path.join(DATA_DIR, "personas")
+_active_persona       = [None]   # {"name": str, "content": str, "persistent": bool} or None
+
+
+def _list_personas() -> list:
+    """Return available personas from shipped + user directories."""
+    personas = []
+    seen = set()
+    for d in [_PERSONAS_USER_DIR, _PERSONAS_SHIPPED_DIR]:
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if fn.endswith(".txt"):
+                name = fn[:-4]
+                if name not in seen:
+                    try:
+                        content = open(os.path.join(d, fn)).read().strip()
+                        personas.append({"name": name, "content": content,
+                                         "source": "user" if d == _PERSONAS_USER_DIR else "shipped"})
+                        seen.add(name)
+                    except Exception:
+                        pass
+    return personas
+
+
 think_mode    = [False] # deep reasoning mode: model shows CoT before answering
 think_budget  = [500]  # max new tokens for think mode
 TRACE_SYNC_MODE = [True]   # True=synchronous inline HVP (default for fresh installs)
@@ -2799,6 +2826,73 @@ def chat(user_msg, history):
             reply = "Unknown subcommand. Try `/persona`, `/persona name Alex`, `/persona reset`, or `/persona prompt <text>`."
         history = list(history or [])
         history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        yield "", history
+        return
+
+    # /mode — activate, deactivate, list, or save personas (Layer 3)
+    if user_msg.lower().startswith("/mode"):
+        args = user_msg[5:].strip()
+        history = list(history or [])
+        history.append({"role": "user", "content": user_msg})
+
+        if not args or args.lower() == "list":
+            # List available personas and show active
+            personas = _list_personas()
+            active = _active_persona[0]
+            lines = ["**Available Personas**\n"]
+            if not personas:
+                lines.append("No persona files found.")
+            else:
+                for p in personas:
+                    marker = " **(active)**" if active and active["name"] == p["name"] else ""
+                    src = " *(custom)*" if p["source"] == "user" else ""
+                    lines.append(f"- `{p['name']}`{src}{marker}")
+            lines.append("\n**Usage:**")
+            lines.append("- `/mode <name>` — activate a persona")
+            lines.append("- `/mode off` — deactivate current persona")
+            lines.append("- `/mode save <name> <text>` — save a custom persona")
+            if active:
+                lines.append(f"\n**Active:** `{active['name']}`")
+            reply = "\n".join(lines)
+        elif args.lower() == "off":
+            if _active_persona[0]:
+                name = _active_persona[0]["name"]
+                _active_persona[0] = None
+                reply = f"**Persona `{name}` deactivated.** Back to base personality."
+            else:
+                reply = "No persona is active."
+        elif args.lower().startswith("save "):
+            # /mode save <name> <text>
+            save_args = args[5:].strip()
+            parts = save_args.split(None, 1)
+            if len(parts) < 2:
+                reply = "Usage: `/mode save <name> <persona text>`"
+            else:
+                pname, ptext = parts
+                pname = pname.lower().replace(" ", "_")
+                os.makedirs(_PERSONAS_USER_DIR, exist_ok=True)
+                ppath = os.path.join(_PERSONAS_USER_DIR, f"{pname}.txt")
+                with open(ppath, "w") as f:
+                    f.write(ptext.strip() + "\n")
+                reply = f"**Custom persona `{pname}` saved.** Activate with `/mode {pname}`."
+        else:
+            # Activate a persona by name
+            pname = args.lower().strip()
+            persistent = False
+            if pname.endswith(" persistent"):
+                pname = pname[:-11].strip()
+                persistent = True
+            personas = _list_personas()
+            match = next((p for p in personas if p["name"] == pname), None)
+            if match:
+                _active_persona[0] = {"name": match["name"], "content": match["content"], "persistent": persistent}
+                flag = " (persistent)" if persistent else " (session-scoped)"
+                reply = f"**Persona `{match['name']}` activated**{flag}.\n\n> {match['content'][:200]}{'...' if len(match['content']) > 200 else ''}"
+            else:
+                available = ", ".join(f"`{p['name']}`" for p in personas) or "none"
+                reply = f"Persona `{pname}` not found. Available: {available}"
+
         history.append({"role": "assistant", "content": reply})
         yield "", history
         return
@@ -4551,7 +4645,7 @@ plt.tight_layout()
         _known_cmds = {
             "/who","/stats","/recap","/summarize","/check","/rephrase","/mood",
             "/export","/clear","/trace","/spectrum","/experiment","/antagonist",
-            "/socratic","/compress","/version","/iam","/forget","/find","/pin","/persona",
+            "/socratic","/compress","/version","/iam","/forget","/find","/pin","/persona","/mode",
             "/save","/load","/finetune","/run","/plot","/calc","/math","/analyze",
             "/adapter","/visionquality","/scaffold","/remember","/recall","/timer",
             "/search","/debate","/eli5","/teacher","/brainstorm","/devil","/peer",
@@ -4628,6 +4722,11 @@ plt.tight_layout()
             "Pick the most important sentence and stop."
         )
         _sys_content = (_sys_content + "\n\n" + _compress_instr) if _sys_content else _compress_instr
+
+    # ── Persona injection (Layer 3) — appends to base personality, never replaces ──
+    if _active_persona[0]:
+        _persona_instr = _active_persona[0]["content"]
+        _sys_content = (_sys_content + "\n\n" + _persona_instr) if _sys_content else _persona_instr
 
     # ── Anti-mode tone: graduated response to quality drop — scales with severity ──
     if ctrl_active.mode in ("anti", "both"):
@@ -6057,6 +6156,7 @@ async def api_init():
         "system_prompt":    system_prompt[0],
         "user_name":        _user_name[0],
         "assistant_name":   _assistant_name[0],
+        "active_persona":   _active_persona[0]["name"] if _active_persona[0] else None,
         "active_sid":       active_sid,
         "vision_tokens":    _VISION_TOKENS,
         "session_restored": bool(_today_sid and _session_history),
@@ -6158,6 +6258,9 @@ async def api_new():
     ctrl.anti_count = 0
     ctrl.session_anchor = None
     ctrl.consec_flattery = 0
+    # Clear session-scoped persona (unless persistent)
+    if _active_persona[0] and not _active_persona[0].get("persistent"):
+        _active_persona[0] = None
     with _pending_trace_lock:
         _pending_trace[0] = None
     _session_epoch[0] += 1            # signal background tasks that session changed
@@ -6904,6 +7007,35 @@ async def api_personality_get():
         "user_name": _user_name[0],
         "system_prompt": system_prompt[0],
     })
+
+@api.get("/api/personas")
+async def api_personas():
+    """Return available personas and active state."""
+    personas = _list_personas()
+    active = _active_persona[0]
+    return JSONResponse({
+        "personas": [{"name": p["name"], "source": p["source"]} for p in personas],
+        "active": active["name"] if active else None,
+    })
+
+@api.post("/api/persona/activate")
+async def api_persona_activate(request: Request):
+    """Activate a persona by name."""
+    data = await request.json()
+    pname = (data.get("name") or "").strip().lower()
+    persistent = bool(data.get("persistent", False))
+    personas = _list_personas()
+    match = next((p for p in personas if p["name"] == pname), None)
+    if not match:
+        return JSONResponse({"error": f"persona '{pname}' not found"}, 404)
+    _active_persona[0] = {"name": match["name"], "content": match["content"], "persistent": persistent}
+    return JSONResponse({"ok": True, "name": match["name"], "persistent": persistent})
+
+@api.post("/api/persona/deactivate")
+async def api_persona_deactivate(request: Request):
+    """Deactivate the current persona."""
+    _active_persona[0] = None
+    return JSONResponse({"ok": True})
 
 @api.post("/api/model_mode")
 async def api_model_mode(request: Request):
