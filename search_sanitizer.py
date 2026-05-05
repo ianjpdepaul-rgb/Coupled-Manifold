@@ -477,7 +477,7 @@ class SearchCache:
 
     def _hash(self, query: str) -> str:
         normalized = " ".join(sorted(query.lower().split()))
-        return hashlib.md5(normalized.encode()).hexdigest()[:16]
+        return hashlib.md5(normalized.encode(), usedforsecurity=False).hexdigest()[:16]
 
     def get(self, query: str):
         h = self._hash(query)
@@ -537,7 +537,7 @@ class DistillationGate:
         normalized = " ".join(sorted(set(
             w.lower() for w in re.findall(r'\b[a-z]{3,}\b', query.lower())
         )))
-        return hashlib.md5(normalized.encode()).hexdigest()[:12]
+        return hashlib.md5(normalized.encode(), usedforsecurity=False).hexdigest()[:12]
 
     def check(self, query: str, results: list, consensus: dict) -> tuple:
         """Returns (allowed: bool, reason: str)."""

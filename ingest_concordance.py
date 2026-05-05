@@ -146,7 +146,7 @@ MAX_DENSITY_NOTES = [
 def make_chunk(text, source, chunk_id=None):
     text = text.strip()
     if chunk_id is None:
-        chunk_id = hashlib.md5(text.encode()).hexdigest()[:12]
+        chunk_id = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()[:12]
     return {
         "text": text,
         "source": source,
