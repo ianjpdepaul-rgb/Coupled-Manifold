@@ -1,22 +1,48 @@
+# Python
 __pycache__/
 *.pyc
-.DS_Store
-.gradio/
+*.pyo
+.pytest_cache/
+
+# Virtual environment
 graceful_env/
-Graceful.app/
-app.py.bak
-manifold_data/backups/
-manifold_data/checkpoints/
-manifold_data/corpus/
-manifold_data/logs/
+
+# Data and logs (change constantly, not version controlled)
 manifold_data/sessions/
+manifold_data/logs/
+manifold_data/checkpoints/
+manifold_data/backups/
+manifold_data/corpus/
+manifold_data/*.npz
+manifold_data/identity.json
 manifold_data/keys.json
 manifold_data/last_seen.json
 manifold_data/named_memory.json
 manifold_data/user_settings.json
 manifold_data/manifold.lock
-manifold_data/identity.json
-*.jsonl
+manifold_data/.corpus_seeded
+manifold_data/archives/
+manifold_data/checkpoints_ARCHIVE_2026-04-18_pre-sync-fix/
+manifold_data/checkpoints_PRE_CLEAN_2026-04-17/
+manifold_data/sessions_PRE_CLEAN_2026-04-17/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+Graceful.app/
+/tmp/graceful_dist/
+*.zip
+
+# Model files (4GB, do not commit)
+*.safetensors
+*.gguf
+
+# Misc
+.gradio/
+.claude/
+app.py.bak
 icon.png
 /static/
-.claude/
+*.jsonl

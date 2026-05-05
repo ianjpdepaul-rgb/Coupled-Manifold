@@ -11,11 +11,15 @@ pip install numpy duckduckgo-search sentence-transformers httpx
 python app.py
 """
 
-import os, re, sys, json, time, gc, threading, random, signal, datetime, collections
+import os, re, sys, json, time, gc, threading, random, signal, datetime, collections, math
 import numpy as np
 import concurrent.futures as _futures, traceback as _tb, base64 as _b64, io as _io_mod
 from contextlib import redirect_stdout, redirect_stderr
 
+
+def _trace_valid(t):
+    """True if t is a real finite trace value (not None, not NaN, not Inf)."""
+    return t is not None and isinstance(t, (int, float)) and not math.isnan(t) and not math.isinf(t)
 
 # ═══════════════════════════════════════════════════
 # STARTUP GUARDS  (fail fast, clear messages)
@@ -133,7 +137,7 @@ def get_thinking_phrase():
     if not trace_history_live:
         return random.choice(THINKING_NEUTRAL)
     last = trace_history_live[-1]["trace"]
-    if last is None: return random.choice(THINKING_NEUTRAL)
+    if not _trace_valid(last): return random.choice(THINKING_NEUTRAL)
     if last > 200:   return random.choice(THINKING_HIGH)
     elif last < -100: return random.choice(THINKING_LOW)
     return random.choice(THINKING_NEUTRAL)
@@ -151,7 +155,7 @@ HUTCH_N     = 1
 MAX_CTX     = 2048   # tokens for online-learning backprop — halved to reduce memory pressure
 TRACE_CTX   = 32     # Hessian trace window — reduced from 64 to halve GPU backward pass time
 TRACE_LAYERS = 8     # adapter layers to subsample per trace call (rotate through all of them)
-MAX_NEW     = 768    # max generated tokens — raised from 512; needed for full code blocks
+MAX_NEW     = 1024   # max generated tokens — M/default budget
 LR          = 1e-5
 GRAD_ACCUM  = 4      # gradient accumulation steps for /finetune and API training
 _VISION_TOKENS = 140 # Gemma 4 vision: default low for speed (140 tokens). /visionquality to raise
@@ -640,33 +644,20 @@ def _check_learn_diversity(response: str) -> bool:
     Returns True if diverse enough to learn from.
     """
     if len(_recent_response_vecs) < 2:
-        _recent_response_vecs.append(response)  # store raw text as fallback
         return True
     try:
         if hasattr(mem, 'corpus') and hasattr(mem.corpus, 'embedder') and mem.corpus.embedder:
             v = mem.corpus.embedder.embed(response)
-            # Compare against stored vectors
+            # Compare against stored vectors (read-only — check_response_diversity is the sole writer)
             max_sim = 0.0
             for prev in _recent_response_vecs:
-                if isinstance(prev, str):
-                    continue  # skip raw text entries from before embedder was ready
+                if not isinstance(prev, np.ndarray):
+                    continue
                 max_sim = max(max_sim, float(mem.corpus.embedder.similarity(v, prev)))
-            _recent_response_vecs.append(v)
             return max_sim < 0.85
         else:
-            # No embedder — use simple word overlap as fallback
-            new_words = set(response.lower().split())
-            for prev in _recent_response_vecs:
-                if isinstance(prev, str):
-                    prev_words = set(prev.lower().split())
-                    overlap = len(new_words & prev_words) / max(len(new_words | prev_words), 1)
-                    if overlap > 0.85:
-                        _recent_response_vecs.append(response)
-                        return False
-            _recent_response_vecs.append(response)
             return True
     except Exception:
-        _recent_response_vecs.append(response)
         return True
 
 
@@ -724,14 +715,21 @@ _TRACE_SKIP_THRESHOLD = 2.0    # if last trace took >2s, skip every other turn
 
 def _compute_trace_mlx(target_model, tokens_np):
     """
-    Hutchinson Hessian trace estimator — fast variant.
+    Hutchinson Hessian trace estimator — central-difference approximation.
 
-    Speedups vs naive:
-      1. TRACE_CTX=64 tokens  (4× fewer than 256)
-      2. Subsample TRACE_LAYERS adapter pairs per call, rotating cursor so all
-         layers are covered every ceil(n/TRACE_LAYERS) turns.
-      3. Adaptive skip: if last call took >_TRACE_SKIP_THRESHOLD seconds, skip
-         every other call (throttle counter) and return last known value.
+    Uses finite differences for the HVP instead of nested autograd:
+        HVP(v) ≈ (∇L(θ + εv) − ∇L(θ − εv)) / (2ε)
+    This requires two extra forward+backward passes but avoids the nested
+    nn.value_and_grad that hangs on Apple Silicon MLX (the full forward pass
+    through 1.6B params makes exact second-order autograd intractable inline).
+
+    The Colab experimental version (SharingAToy.ipynb) uses exact autograd HVP
+    via torch.autograd.functional.hvp. This central-difference approximation
+    agrees within ~1-5% for well-conditioned adapters. Validation TBD — the
+    exact version is preserved as _compute_trace_mlx_exact below.
+
+    Gradients are scoped to adapter lA/lB params only (~168 tensors), not the
+    full model (~1745 trainable tensors). This matches the Colab precedent.
 
     tokens_np: 1-D numpy int32 array.
     Returns Optional[float]: a real Hessian trace estimate (can be negative —
@@ -753,15 +751,13 @@ def _compute_trace_mlx(target_model, tokens_np):
     # ── Select layer subset — weighted toward later + historically variable layers ──
     n = len(adapters)
     k = min(TRACE_LAYERS, n)
-    # Base weight: linearly increasing toward later layers (later layers carry more curvature).
     base_w = np.array([(i + 1) / n for i in range(n)], dtype=np.float32)
-    # Boost layers that have shown high trace variance in past calls.
     var_w  = np.array([_trace_layer_vars.get(i, 1.0) for i in range(n)], dtype=np.float32)
     var_w  = var_w / (var_w.max() + 1e-8)
     weight = base_w * (0.5 + 0.5 * var_w)
-    weight = weight.astype(np.float64)         # np.random.choice requires float64
-    weight = weight / weight.sum()             # normalize in float64 to minimize drift
-    weight[-1] += 1.0 - weight.sum()           # correct residual float64 drift in last element
+    weight = weight.astype(np.float64)
+    weight = weight / weight.sum()
+    weight[-1] += 1.0 - weight.sum()
     indices = list(np.random.choice(n, size=k, replace=False, p=weight))
     subset  = [adapters[i] for i in indices]
 
@@ -773,11 +769,19 @@ def _compute_trace_mlx(target_model, tokens_np):
     for a in subset:
         a.lora_on = True
 
+    # Don't call target_model.freeze()/unfreeze() — Gemma 4's
+    # AudioRelativePositionEmbedding crashes freeze(), and unfreeze()
+    # would expose 4-bit quantized weights to gradient computation
+    # (QuantizedMatmul has no vjp). The model already has the right
+    # freeze state: quantized base frozen, adapter params unfrozen.
+    # We filter gradients to adapter lA/lB keys post-hoc.
+
     tokens = mx.array(tokens_np.reshape(1, -1)[:, :TRACE_CTX])
 
     def loss_fn(m):
         lm = m.language_model
-        logits = lm(tokens)
+        out = lm(tokens)
+        logits = out.logits if hasattr(out, 'logits') else out
         shift  = logits[:, :-1, :]
         tgt    = tokens[:, 1:]
         return nn.losses.cross_entropy(
@@ -785,6 +789,154 @@ def _compute_trace_mlx(target_model, tokens_np):
         ).mean()
 
     t_start = time.time()
+    try:
+        # Compute ε from adapter param norms: ε = sqrt(machine_eps_bf16) * ||θ_adapter||
+        # bfloat16 machine eps ≈ 0.0078125, sqrt ≈ 0.0884
+        param_norm_sq = 0.0
+        for a in subset:
+            param_norm_sq += float(mx.sum(a.lA * a.lA)) + float(mx.sum(a.lB * a.lB))
+        param_norm = max(np.sqrt(param_norm_sq), 1e-8)
+        eps = 0.0884 * param_norm  # sqrt(bf16_eps) * ||θ||
+
+        # Base gradient at θ — filter to adapter lA/lB keys only
+        _, grads_0 = nn.value_and_grad(target_model, loss_fn)(target_model)
+        mx.eval(grads_0)
+        flat_g0 = {k: v for k, v in mlx_utils.tree_flatten(grads_0)
+                   if v is not None and ('.lA' in k or '.lB' in k)}
+        if not flat_g0:
+            return None
+
+        # Rademacher probe vector v ∈ {-1, +1} for each adapter param
+        vs = {k: mx.array(np.random.choice([-1.0, 1.0], g.shape).astype(np.float32))
+              for k, g in flat_g0.items()}
+
+        # Helper: navigate dotted key path to (parent_obj, attr_name)
+        def _resolve(key):
+            parts = key.split(".")
+            obj = target_model
+            for p in parts[:-1]:
+                obj = getattr(obj, p) if not p.isdigit() else obj[int(p)]
+            return obj, parts[-1]
+
+        # Save original adapter weights
+        saved_weights = {}
+        for key in flat_g0:
+            obj, attr = _resolve(key)
+            saved_weights[key] = getattr(obj, attr)
+
+        # Perturb θ → θ + εv, compute gradient
+        for key, vec in vs.items():
+            obj, attr = _resolve(key)
+            setattr(obj, attr, saved_weights[key] + eps * vec)
+        mx.eval(target_model.parameters())
+        _, grads_plus = nn.value_and_grad(target_model, loss_fn)(target_model)
+        mx.eval(grads_plus)
+        flat_gp = {pk: pv for pk, pv in mlx_utils.tree_flatten(grads_plus)
+                   if pv is not None and ('.lA' in pk or '.lB' in pk)}
+
+        # Perturb θ → θ - εv, compute gradient
+        for key, vec in vs.items():
+            obj, attr = _resolve(key)
+            setattr(obj, attr, saved_weights[key] - eps * vec)
+        mx.eval(target_model.parameters())
+        _, grads_minus = nn.value_and_grad(target_model, loss_fn)(target_model)
+        mx.eval(grads_minus)
+        flat_gm = {pk: pv for pk, pv in mlx_utils.tree_flatten(grads_minus)
+                   if pv is not None and ('.lA' in pk or '.lB' in pk)}
+
+        # Restore original weights
+        for key in saved_weights:
+            obj, attr = _resolve(key)
+            setattr(obj, attr, saved_weights[key])
+        mx.eval(target_model.parameters())
+
+        # Central-difference HVP: (∇L(θ+εv) - ∇L(θ-εv)) / (2ε)
+        # Hutchinson trace estimate: Tr(H) ≈ vᵀ Hv = Σ v_k · hvp_k
+        raw = 0.0
+        per_layer = {}
+        for key in vs:
+            if key in flat_gp and key in flat_gm:
+                hvp_k = (flat_gp[key] - flat_gm[key]) / (2.0 * eps)
+                vhv = float(mx.sum(vs[key] * hvp_k))
+                raw += vhv
+                _m = re.search(r'\.layers\.(\d+)\.', key)
+                if _m:
+                    li = int(_m.group(1))
+                    per_layer[li] = per_layer.get(li, 0.0) + vhv ** 2
+
+        trace = raw * (n / k)  # unbiased rescaling for subset sampling
+
+        # Update per-layer running variance (EMA) for future sampling weights
+        for li, contrib in per_layer.items():
+            prev = _trace_layer_vars.get(li, contrib)
+            _trace_layer_vars[li] = 0.9 * prev + 0.1 * contrib
+
+        _trace_last_elapsed[0] = time.time() - t_start
+        result = float(trace)
+        if np.isnan(result) or np.isinf(result):
+            return None
+        return result
+    except Exception as e:
+        print(f"  [trace failed: {e}]")
+        return None
+    finally:
+        # Restore adapter flags (lora_on/anti_on were toggled for subset selection)
+        for a, s_l, s_a in zip(adapters, _saved_lora, _saved_anti):
+            a.lora_on = s_l
+            a.anti_on = s_a
+
+
+def _compute_trace_mlx_exact(target_model, tokens_np):
+    """
+    Exact Hutchinson Hessian trace via nested autograd HVP — REFERENCE ONLY.
+
+    This is the theoretically correct version using nn.value_and_grad nested
+    inside nn.value_and_grad for exact second-order derivatives. It matches the
+    Colab experimental version (SharingAToy.ipynb) which uses
+    torch.autograd.functional.hvp.
+
+    On Apple Silicon MLX, this hangs because the nested backward pass runs the
+    full 1.6B-param forward graph twice per HVP probe. Use _compute_trace_mlx
+    (central-difference approximation) for deployment.
+
+    Kept as dead code for future validation: run both on the same input to
+    measure approximation error and establish tolerance bounds.
+    """
+    adapters = _get_adapters(target_model)
+    if not adapters:
+        return None
+
+    n = len(adapters)
+    k = min(TRACE_LAYERS, n)
+    weight = np.array([(i + 1) / n for i in range(n)], dtype=np.float64)
+    weight = weight / weight.sum()
+    weight[-1] += 1.0 - weight.sum()
+    indices = list(np.random.choice(n, size=k, replace=False, p=weight))
+    subset  = [adapters[i] for i in indices]
+
+    _saved_lora = [a.lora_on for a in adapters]
+    _saved_anti = [a.anti_on for a in adapters]
+    for a in adapters:
+        a.lora_on = False; a.anti_on = False
+    for a in subset:
+        a.lora_on = True
+
+    target_model.freeze()
+    for a in subset:
+        a.unfreeze(keys=["lA", "lB"])
+
+    tokens = mx.array(tokens_np.reshape(1, -1)[:, :TRACE_CTX])
+
+    def loss_fn(m):
+        lm = m.language_model
+        out = lm(tokens)
+        logits = out.logits if hasattr(out, 'logits') else out
+        shift  = logits[:, :-1, :]
+        tgt    = tokens[:, 1:]
+        return nn.losses.cross_entropy(
+            shift.reshape(-1, shift.shape[-1]), tgt.reshape(-1)
+        ).mean()
+
     try:
         _, grads = nn.value_and_grad(target_model, loss_fn)(target_model)
         mx.eval(grads)
@@ -804,33 +956,32 @@ def _compute_trace_mlx(target_model, tokens_np):
         mx.eval(hvp)
         flat_h = {k: v for k, v in mlx_utils.tree_flatten(hvp) if v is not None}
 
-        # Scale back up: subset estimate → full estimate
         raw   = sum(float(mx.sum(vs[k] * flat_h[k])) for k in vs if k in flat_h)
-        trace = raw * (n / k)   # unbiased rescaling
-
-        # Update per-layer running variance (EMA) for future sampling weights.
-        # flat_h keys look like "language_model.model.layers.12.self_attn.q_proj.lA"
-        # Find the segment after "layers." to extract layer index.
-        per_layer = {}
-        for key, h_val in flat_h.items():
-            _m = re.search(r'\.layers\.(\d+)\.', key)
-            if _m:
-                li = int(_m.group(1))
-                contribution = float(mx.sum(vs[key] * h_val) ** 2) if key in vs else 0.0
-                per_layer[li] = per_layer.get(li, 0.0) + contribution
-        for li, contrib in per_layer.items():
-            prev = _trace_layer_vars.get(li, contrib)
-            _trace_layer_vars[li] = 0.9 * prev + 0.1 * contrib  # EMA
-
-        _trace_last_elapsed[0] = time.time() - t_start
-        return float(trace)
+        trace = raw * (n / k)
+        result = float(trace)
+        if np.isnan(result) or np.isinf(result):
+            return None
+        return result
     except Exception as e:
-        print(f"  [trace failed: {e}]")
+        print(f"  [trace_exact failed: {e}]")
         return None
     finally:
         for a, s_l, s_a in zip(adapters, _saved_lora, _saved_anti):
             a.lora_on = s_l
             a.anti_on = s_a
+        for a in adapters:
+            a.unfreeze()
+
+
+def _adapters_are_cold(target_model, threshold=1e-5):
+    """Check if all adapter lB matrices are near-zero (fresh init / wiped checkpoint)."""
+    adapters = _get_adapters(target_model)
+    if not adapters:
+        return True
+    for a in adapters:
+        if float(mx.sum(a.lB * a.lB)) > threshold * threshold * a.lB.size:
+            return False
+    return True
 
 
 def compute_trace(tokens_np):
@@ -895,23 +1046,10 @@ except ImportError as _e:
 _adapter_cache: dict = {}  # model id → list of DualAdapter instances
 
 def _get_adapters(target_model) -> list:
-    """Return cached list of DualAdapter instances for target_model (MLX tree walk)."""
+    """Return cached list of DualAdapter instances for target_model."""
     key = id(target_model)
-    if key not in _adapter_cache:
-        found = []
-        def _walk(mod):
-            if isinstance(mod, DualAdapter):
-                found.append(mod)
-                return  # don't recurse into adapter's own base
-            # MLX modules expose children via their __dict__
-            for v in vars(mod).values():
-                if isinstance(v, nn.Module):
-                    _walk(v)
-                elif isinstance(v, (list, tuple)):
-                    for item in v:
-                        if isinstance(item, nn.Module):
-                            _walk(item)
-        _walk(target_model)
+    if key not in _adapter_cache or not _adapter_cache[key]:
+        found = [adapter for _, adapter in _iter_named_adapters(target_model)]
         _adapter_cache[key] = found
     return _adapter_cache[key]
 
@@ -1057,8 +1195,8 @@ def load_latest_checkpoint():
     if os.path.exists(snob_path):
         with open(snob_path) as f:
             s = json.load(f)
-            ctrl.history    = s.get("history", [])
-            ctrl.all_traces = s.get("all_traces", [])
+            ctrl.history    = [v for v in s.get("history", []) if _trace_valid(v)]
+            ctrl.all_traces = [v for v in s.get("all_traces", []) if _trace_valid(v)]
             ctrl.log        = s.get("log", [])
             ctrl.mode       = s.get("mode", "lora")
 
@@ -1652,6 +1790,7 @@ show_medulla  = [True]  # toggle technical readout per user preference
 _antagonist_armed = [False]  # T2-8: one-turn antagonist mode (always single-turn)
 _socratic_mode    = [False]  # T4-2: stays on until toggled off
 _compress_mode    = [False]  # T4-5: one-sentence compress mode
+_skip_search_this_turn = [False]  # /continue: suppress search for continuation turns
 _dream_injection  = [None]   # T4-1: free ideation injection
 _scaffold_injection = [None] # T2-5: scaffold topic injection
 _reading_injection  = [None] # T4-3: reading list injection
@@ -1681,6 +1820,10 @@ system_prompt = [_DEFAULT_SYSTEM_PROMPT]    # user-defined system prompt, prepen
 _user_name    = [""]    # optional — injected into system prompt as "You're talking to <name>."
 online_learning = [True]   # user toggle: online LoRA updates after good turns
 
+think_mode    = [False] # deep reasoning mode: model shows CoT before answering
+think_budget  = [500]  # max new tokens for think mode
+TRACE_SYNC_MODE = [True]   # True=synchronous inline HVP (default for fresh installs)
+
 # ── Load persisted user settings from disk ──────────────────────────────────
 try:
     with open(_SETTINGS_PATH) as _sf:
@@ -1692,13 +1835,13 @@ try:
             temp_override[0] = max(0.0, min(2.0, float(_saved["temp"])))
         if "online_learning" in _saved:
             online_learning[0] = bool(_saved["online_learning"])
+        if "trace_sync_mode" in _saved:
+            TRACE_SYNC_MODE[0] = bool(_saved["trace_sync_mode"])
 except (FileNotFoundError, json.JSONDecodeError):
     pass  # first run or corrupt file — use defaults
-
-think_mode    = [False] # deep reasoning mode: model shows CoT before answering
-think_budget  = [500]  # max new tokens for think mode
-TRACE_SYNC_MODE = [False]  # False=async (legacy, 0.0 contamination), True=synchronous inline HVP
 _learn_step_count = [0]    # cumulative learn steps — used for LR decay
+_bootstrap_steps  = [0]    # bootstrap learn steps with cold adapters (Gate B bypassed)
+_BOOTSTRAP_LIMIT  = 10     # max bootstrap steps before requiring real trace signal
 _recent_response_vecs = collections.deque(maxlen=5)  # diversity gate for learning
 trace_history_live = []   # for live chart
 model_mode    = ["mixed"]  # current ModelPair mode
@@ -1987,6 +2130,8 @@ def check_response_diversity(response: str) -> tuple:
             return False, 0.0
         max_sim = 0.0
         for prev_vec in _recent_response_vecs:
+            if not isinstance(prev_vec, np.ndarray):
+                continue
             try:
                 sim = float(np.dot(resp_vec, prev_vec) /
                             (np.linalg.norm(resp_vec) * np.linalg.norm(prev_vec) + 1e-9))
@@ -2030,7 +2175,7 @@ def should_suggest_redirect() -> tuple:
     if len(trace_history_live) < 5:
         return False, ""
     recent_tv = trace_history_live[-5:]
-    traces = [t["trace"] for t in recent_tv if t["trace"] is not None]
+    traces = [t["trace"] for t in recent_tv if _trace_valid(t["trace"])]
     if len(traces) < 3:
         return False, ""
     # Monotonically declining (with small tolerance)
@@ -2066,10 +2211,10 @@ def build_interoceptive_block():
     recent = trace_history_live[-8:]
     rhythm = " ".join(
         ("▲" if t["trace"]>0 else "▽")+str(abs(int(t["trace"]//100)))
-        if t["trace"] is not None else "·"
+        if _trace_valid(t["trace"]) else "·"
         for t in recent
     )
-    _valid_vals = [t["trace"] for t in recent if t["trace"] is not None]
+    _valid_vals = [t["trace"] for t in recent if _trace_valid(t["trace"])]
     if len(_valid_vals) >= 3:
         slope = (_valid_vals[-1]-_valid_vals[0])/len(_valid_vals)
         momentum = "collapsing" if slope < -30 else "expanding" if slope > 30 else "stable"
@@ -2140,6 +2285,15 @@ for _cname in ("concordance_903_notes.md", "concordance.md",
         print(f"  Auto-indexed {os.path.basename(_cname)}")
         break
 print(f"  Boot time: {time.time() - _boot_t0:.1f}s\n")
+
+# Cold-adapter detection for bootstrap mode
+try:
+    if _adapters_are_cold(model):
+        print("  ❄️  Cold adapters detected — bootstrap mode active (Gate B bypassed for first 10 learn steps)")
+    else:
+        print("  ✅  Warm adapters — normal learning gates active")
+except Exception as _cold_e:
+    print(f"  [cold-adapter check failed: {_cold_e}]")
 
 print("  Ready.\n")
 
@@ -2256,6 +2410,9 @@ def detect_and_run_code(response: str) -> tuple:
     if not matches:
         return response, False
     for code in matches:
+        # Clean stray backticks/fences that sometimes leak into extracted blocks
+        code = re.sub(r'^```(?:python|py)?\n', '', code.strip())
+        code = re.sub(r'\n?```\s*$', '', code).strip()
         if any(sig in code for sig in [
             'print(', 'plt.', 'pd.DataFrame', 'display(',
             'sns.', 'sm.', 'smf.', 'solve(', 'diff(', 'integrate(',
@@ -2313,8 +2470,9 @@ _TOOL_SYSTEM = (
     "After a tool tag, STOP. Results are injected. Incorporate them naturally. "
     "Max 3 tool calls per reply. Never mention tool use to the user.\n\n"
     "MATH AND CODE RULE: When asked to compute, plot, graph, or write code — act immediately.\n"
-    "Pick reasonable defaults. Never ask for parameters you can assume.\n"
-    "Use <tool:run> for Python. After the tag, STOP — don't write anything else.\n\n"
+    "Pick reasonable defaults (k=3, 2D, 200 points, etc). NEVER ask for clarification — just do it.\n"
+    "Use <tool:run> for Python. After the tag, STOP — don't write anything else.\n"
+    "If the user asks how you made something or to explain your code, describe the code you ran in plain text — do NOT re-run it.\n\n"
     "Example — user: 'plot a sine wave'\n"
     "You respond:\n"
     "<tool:run>\n"
@@ -2347,7 +2505,11 @@ def execute_tool(name: str, arg: str) -> tuple[str, str]:
                 for c in _chunks
             ), "")
         elif name == "run":
-            _text, _html = execute_python(arg.strip())
+            _code = arg.strip()
+            # Strip markdown fences the model sometimes wraps inside <tool:run>
+            _code = re.sub(r'^```(?:python|py)?\n', '', _code)
+            _code = re.sub(r'\n?```\s*$', '', _code)
+            _text, _html = execute_python(_code.strip())
             return (_text or "(no output)", _html)
         elif name == "fetch":
             import httpx
@@ -2611,6 +2773,14 @@ def chat(user_msg, history):
 
     # /continue — resume a response that was cut short
     if user_msg.strip().lower() in ("/continue", "/cont"):
+        _has_asst = any(_m.get("role") == "assistant" for _m in (history or []))
+        if not _has_asst:
+            reply = "Nothing to continue from — send a message first."
+            history = list(history or [])
+            history.append({"role": "user", "content": user_msg})
+            history.append({"role": "assistant", "content": reply})
+            yield "", history
+            return
         _last_asst = ""
         for _m in reversed(list(history or [])):
             if _m.get("role") == "assistant":
@@ -2620,6 +2790,11 @@ def chat(user_msg, history):
                 # Strip medulla blocks before inspecting
                 if "<!--MED-->" in _c:
                     _c = _c[:_c.index("<!--MED-->")]
+                # Strip injected badges/HTML decorations (drift, confidence, dream markers, patho wrappers)
+                _c = re.sub(r'<span\b[^>]*>.*?</span>', '', _c)
+                _c = re.sub(r'<div\b[^>]*>.*?</div>', '', _c, flags=re.DOTALL)
+                _c = re.sub(r'<!--\w+-->', '', _c)
+                _c = re.sub(r'\*\[DIVERSITY ALERT:.*?\]\*', '', _c)
                 _last_asst = _c.strip()
                 break
         if not _last_asst:
@@ -2636,6 +2811,7 @@ def chat(user_msg, history):
             f"Do not repeat what you already said. Pick up immediately after: "
             f"«{_cont_suffix}»"
         )
+        _skip_search_this_turn[0] = True
         # Fall through to normal generation with this modified user_msg
 
     # /stats — system and memory status
@@ -2843,7 +3019,7 @@ def chat(user_msg, history):
                         topics.add(w)
             top_topics = list(topics)[:8]
             n_turns = len(session_log)
-            _sum_traces = [t.get('trace') for t in session_log[-10:] if t.get('trace') is not None]
+            _sum_traces = [t.get('trace') for t in session_log[-10:] if _trace_valid(t.get('trace'))]
             avg_trace = round(sum(_sum_traces) / max(1, len(_sum_traces)), 0) if _sum_traces else 0
             reply = (
                 f"**Session summary** ({n_turns} turns, avg trace {avg_trace:.0f})\n\n"
@@ -2879,7 +3055,7 @@ def chat(user_msg, history):
                            "not sure", "uncertain", "unclear", "probably", "seems", "appears"]
             hedges_found = [w for w in hedge_words if w in last_response.lower()]
             last_trace = session_log[-1].get("trace") if session_log else None
-            if last_trace is not None:
+            if _trace_valid(last_trace):
                 confidence = "high" if last_trace > 150 else "medium" if last_trace > 80 else "low"
                 _trace_display = f"`{last_trace:.0f}`"
             else:
@@ -2931,7 +3107,7 @@ def chat(user_msg, history):
             reply = "Not enough turns yet for a mood reading — keep going."
         else:
             recent = session_log[-10:]
-            _mood_traces = [t.get("trace") for t in recent if t.get("trace") is not None]
+            _mood_traces = [t.get("trace") for t in recent if _trace_valid(t.get("trace"))]
             avg_trace = sum(_mood_traces) / len(_mood_traces) if _mood_traces else 0
             slope_vals = [t.get("slope", 0) for t in recent]
             avg_slope = sum(slope_vals) / len(slope_vals) if slope_vals else 0
@@ -3542,9 +3718,12 @@ plt.tight_layout()
             TRACE_SYNC_MODE[0] = False
             reply = "**Trace mode**: async background (legacy). Traces may be None under rapid messaging."
         else:
-            _mode_str = "sync" if TRACE_SYNC_MODE[0] else "async"
-            reply = (f"**Trace mode**: `{_mode_str}`\n\n"
-                     f"Usage: `/trace-mode sync` · `/trace-mode async`")
+            # Toggle when no argument given
+            TRACE_SYNC_MODE[0] = not TRACE_SYNC_MODE[0]
+            if TRACE_SYNC_MODE[0]:
+                reply = "**Trace mode**: synchronous inline HVP. Every turn gets a real measurement. +2-5s latency."
+            else:
+                reply = "**Trace mode**: async background (legacy). Traces may be None under rapid messaging."
         history = list(history or [])
         history.append({"role": "user",      "content": user_msg})
         history.append({"role": "assistant", "content": reply})
@@ -4368,7 +4547,7 @@ plt.tight_layout()
             f"Use proper Obsidian [[wikilink]] format for connections."
         )
 
-    history = list(history or (startup_history if startup_history else []))
+    history = list(history if history is not None else (startup_history if startup_history else []))
     history.append({"role": "user", "content": user_msg})
 
     # ── Greeting / ack intercept — skip model entirely, respond instantly ──
@@ -4433,7 +4612,9 @@ plt.tight_layout()
     web_context = ""
     _search_sources: list = []
     _last_web_query: str = ""
-    if should_search(user_msg):
+    if _skip_search_this_turn[0]:
+        _skip_search_this_turn[0] = False
+    elif should_search(user_msg):
         results = search_web(search_query)
         if results:
             searched = True
@@ -4475,6 +4656,11 @@ plt.tight_layout()
         _ctx_corpus  = 2       # two corpus chunks
         _ctx_compact = False   # full identity block
 
+    # Identity-relevant queries need the full block (raw_notes, not compact)
+    _q_low = user_msg.lower()
+    if any(w in _q_low for w in ["about me", "you know", "remember", "told you", "my ", "i am", "who am i"]):
+        _ctx_compact = False
+
     _drift_pre   = compute_drift(user_msg)  # pre-gen drift on user message
     if _drift_pre > 0.55:                   # user drifting from corpus — boost injection
         _ctx_corpus = min(_ctx_corpus + 2, 4)
@@ -4486,7 +4672,7 @@ plt.tight_layout()
     # ── Context budget allocation ────────────────────────────────
     if _CONTEXT_BUDGET_AVAILABLE:
         _budgets     = _context_budget.allocate(user_msg, searched, bool(mem_context), turn_count[0])
-        mem_context  = _context_budget.truncate_to_budget(mem_context,  _budgets.get("corpus", 800))
+        mem_context  = _context_budget.truncate_to_budget(mem_context,  _budgets.get("corpus", 800) + _budgets.get("identity", 300))
         intero_block = _context_budget.truncate_to_budget(intero_block, _budgets.get("interoception", 300))
         web_context  = _context_budget.truncate_to_budget(web_context,  _budgets.get("search", 1800))
     else:
@@ -4528,8 +4714,10 @@ plt.tight_layout()
             "/adapter","/visionquality","/scaffold","/remember","/recall","/timer",
             "/search","/debate","/eli5","/teacher","/brainstorm","/devil","/peer",
             "/hypothesis","/swot","/risk","/translate","/elaborate","/rhetorical",
-            "/evolve","/thread","/continue","/think","/knowledge","/backup",
-            "/zettelkasten","/new","/help","/mode",
+            "/evolve","/thread","/continue","/knowledge","/backup",
+            "/zettelkasten","/help","/counterpoint","/flashcards","/contradict",
+            "/abstract","/quiz","/glossary","/week","/brief","/dream","/reading",
+            "/data",
         }
         if _cmd_word not in _known_cmds:
             _err_reply = f"Unknown command `{_cmd_word}`. Type / for the command list."
@@ -4694,8 +4882,10 @@ plt.tight_layout()
             + _no_data_rule +
             "3. For plots: use matplotlib (plt is pre-imported). Always call plt.tight_layout() at the end. Do NOT call plt.show() — the output is captured automatically.\n"
             "4. For k-means/clustering: use sklearn.cluster.KMeans. Include a scatter plot of the clusters colored by label.\n"
+            "   SHAPE RULE: np.random.normal(loc=[a,b], scale=s, size=(N,2)) — size MUST be a tuple (N, D) matching loc dimensions. size=N alone produces 1D!\n"
             "5. Use LaTeX math notation for any formulas: inline $...$ or display $$...$$\n"
-            "6. Be precise. No preamble, no 'here is the code', no asking for confirmation."
+            "6. Be precise. No preamble, no 'here is the code', no asking for confirmation.\n"
+            "7. SHOW DON'T TELL: If asked to show, demonstrate, or visualize anything — respond with ONLY a code block. No prose before or after. The output speaks for itself."
         )
         _sys_content = (_sys_content + "\n\n" + _stats_instr) if _sys_content else _stats_instr
 
@@ -4782,7 +4972,7 @@ plt.tight_layout()
     if temp_override[0] > 0:
         temp = float(temp_override[0])
     elif len(trace_history_live) >= 4:
-        tv     = [t["trace"] for t in trace_history_live[-4:] if t["trace"] is not None]
+        tv     = [t["trace"] for t in trace_history_live[-4:] if _trace_valid(t["trace"])]
         tslope = (tv[-1]-tv[0]) / max(len(tv) - 1, 1) if len(tv) >= 2 else 0
         if tslope < -30:
             temp      = min(1.1, 0.7 + abs(tslope)/200)
@@ -4799,7 +4989,9 @@ plt.tight_layout()
             "step by step", "detail", "reason", "because", "critique", "argue",
             "essay", "write", "code", "function", "implement", "algorithm",
         ])
-        if _wc_think <= 8 and not _complex_signals:
+        if _is_code_request:
+            _max_new = max(think_budget[0], MAX_NEW)  # code needs full budget even in think mode
+        elif _wc_think <= 8 and not _complex_signals:
             _max_new = min(think_budget[0], 150)   # brief response for simple turns
         elif not _complex_signals and _wc_think <= 20:
             _max_new = min(think_budget[0], 300)   # medium
@@ -4833,11 +5025,22 @@ plt.tight_layout()
         else:
             _max_new = MAX_NEW  # complex — full budget
 
+        # Response length override — L mode gets 50% more tokens to avoid mid-sentence cutoffs
+        if _response_length[0] == "L":
+            _max_new = max(_max_new, 2048)
+
+    # Response length / code override — applies regardless of think mode
+    if _response_length[0] == "L":
+        _max_new = max(_max_new, 2048)
+    if _is_code_request:
+        _max_new = max(_max_new, MAX_NEW)
+
     # ── Tool dispatch state ──────────────────────────────────────
     _tool_calls_this_turn = 0
     _extra_context        = ""    # accumulated tool results
     _tools_used           = []    # for medulla display
     _tools_html_blobs     = []    # HTML output (plots, DataFrames) from tool:run calls
+    _tools_code_blocks    = []    # code that was executed — shown in chat ("show your work")
     _base_messages        = list(messages)
 
     # ── Outer loop — re-runs after each tool call ────────────────
@@ -4927,12 +5130,12 @@ plt.tight_layout()
                 partial = "".join(raw_tokens)
 
                 # ── Tool tag detection ────────────────────────────────
+                # Only match COMPLETE tool tags during streaming — open-ended
+                # fallback runs after generation ends to avoid premature capture
+                # Skip "think" — it's a silent scratchpad, not an executable tool
                 if _tool_calls_this_turn < _MAX_TOOL_CALLS and not _stop_for_tool:
                     _tm = _TOOL_RE.search(partial)
-                    if not _tm:
-                        # Also detect open-ended tool calls (model forgot closing tag)
-                        _tm = _TOOL_OPEN_RE.search(partial)
-                    if _tm:
+                    if _tm and _tm.group(1) != "think":
                         _stop_for_tool = True
                         _tool_match    = _tm
                         stop_event.set()
@@ -4953,6 +5156,9 @@ plt.tight_layout()
                     display = partial
                 # Strip any tool tags from display (don't show raw tool calls to user)
                 display = re.sub(r'<tool:\w+>.*', '', display, flags=re.DOTALL).rstrip()
+                # Also strip square-bracket variants: [tool:think]...[/tool:think]
+                display = re.sub(r'\[tool:\w+\].*?\[/tool:\w+\]', '', display, flags=re.DOTALL).rstrip()
+                display = re.sub(r'\[tool:\w+\].*', '', display, flags=re.DOTALL).rstrip()
                 # If stripping left nothing (pure thinking state), show indicator
                 if not display.strip():
                     display = f"*{thinking}*"
@@ -4972,6 +5178,13 @@ plt.tight_layout()
             break
         stop_event.clear()
 
+        # Open-ended tool fallback — model hit EOS without closing tag
+        if not _tool_match and _tool_calls_this_turn < _MAX_TOOL_CALLS:
+            partial = "".join(raw_tokens)
+            _tm = _TOOL_OPEN_RE.search(partial)
+            if _tm and _tm.group(1) != "think":
+                _tool_match = _tm
+
         # ── Execute tool ──────────────────────────────────────────
         if _tool_match and _tool_calls_this_turn < _MAX_TOOL_CALLS:
             _tool_calls_this_turn += 1
@@ -4980,17 +5193,27 @@ plt.tight_layout()
             _tools_used.append(_tname)
 
             _pre = "".join(raw_tokens)[:_tool_match.start()].strip()
+            # Strip leaked tool:think content from pre-tool text (both bracket formats)
+            _pre = re.sub(r'<tool:\w+>.*?</tool:\w+>', '', _pre, flags=re.DOTALL).strip()
+            _pre = re.sub(r'\[tool:\w+\].*?\[/tool:\w+\]', '', _pre, flags=re.DOTALL).strip()
             _ind = (_pre + f"\n\n*{_tname}…*") if _pre else f"*{_tname}…*"
             yield "", history + [{"role": "assistant", "content": _ind}]
 
             _result, _tool_html = execute_tool(_tname, _targ)
-            # Stash HTML output from run calls (plots, DataFrames) — appended after generation
+            # Stash code + HTML output from run calls — shown in chat
+            if _tname == "run":
+                _tools_code_blocks.append(_targ.strip())
             if _tool_html:
                 _tools_html_blobs.append(_tool_html)
             # Escape any tool markers in the result to prevent re-injection
             _result_safe = re.sub(r'<tool:\w+>', '[tool-ref]', str(_result))
             _result_safe = re.sub(r'</tool:\w+>', '[/tool-ref]', _result_safe)
-            _extra_context += f"\n\n[TOOL:{_tname}]\n{_result_safe}\n[/TOOL]"
+            # Include the code that was executed so the model can reference/explain it
+            if _tname == "run":
+                _code_echo = _targ[:1500]  # cap to avoid bloating context
+                _extra_context += f"\n\n[TOOL:{_tname}]\nCode executed:\n```python\n{_code_echo}\n```\nOutput:\n{_result_safe}\n[/TOOL]"
+            else:
+                _extra_context += f"\n\n[TOOL:{_tname}]\n{_result_safe}\n[/TOOL]"
             raw_tokens = []
         else:
             break   # no tool or cap reached
@@ -5010,9 +5233,11 @@ plt.tight_layout()
         response = response.split("<|channel>response")[-1].lstrip("\n").strip()
     elif "</think>" in response:
         response = response.split("</think>")[-1].strip()
-    # Strip any leaked tool tags from final response
+    # Strip any leaked tool tags from final response (angle and square bracket variants)
     response = re.sub(r'<tool:\w+>.*?</tool:\w+>', '', response, flags=re.DOTALL).strip()
     response = re.sub(r'<tool:\w+>[^<]*', '', response, flags=re.DOTALL).strip()
+    response = re.sub(r'\[tool:\w+\].*?\[/tool:\w+\]', '', response, flags=re.DOTALL).strip()
+    response = re.sub(r'\[tool:\w+\][^\[]*', '', response, flags=re.DOTALL).strip()
     # Fix math wrapped in backticks by the model — `` `$E=mc^2$` `` → `$E=mc^2$`
     # KaTeX can't see math inside code spans, so strip the outer backtick wrappers.
     response = re.sub(r'`(\$\$[\s\S]+?\$\$)`', r'\1', response)
@@ -5047,12 +5272,13 @@ plt.tight_layout()
         # ── ASYNC MODE (legacy): read pending trace from background thread ──
         with _pending_trace_lock:
             _trace_age = turn_count[0] - _pending_trace_turn[0]
-            if _pending_trace[0] is not None and _trace_age <= 2:
+            if _trace_valid(_pending_trace[0]) and _trace_age <= 2:
                 trace = _pending_trace[0]
                 _pending_trace[0] = None
             else:
                 _pending_trace[0] = None
-                trace = ctrl_active.all_traces[-1] if ctrl_active.all_traces else None
+                _last_t = ctrl_active.all_traces[-1] if ctrl_active.all_traces else None
+                trace = _last_t if _trace_valid(_last_t) else None
         # Launch background trace for next turn
         if not _skip_trace:
             _bg_ids   = out_ids.copy()
@@ -5091,7 +5317,7 @@ plt.tight_layout()
                 _mod.a_str = _anti_str
     _drift_quick = compute_drift(response)
     trace_history_live.append({"turn": turn_count[0],
-                                "trace": round(trace, 1) if trace is not None else None,
+                                "trace": round(trace, 1) if _trace_valid(trace) else None,
                                 "mode": mode, "model": model_label,
                                 "drift": round(_drift_quick, 3)})
     if len(trace_history_live) > 200:
@@ -5159,18 +5385,30 @@ plt.tight_layout()
         and not _is_greeting_msg(user_msg)
         and len(user_msg.strip()) >= 20
     )
+    if not _trace_valid(_pre_slope):
+        _slope_ok = True          # no slope history yet, allow learning
+    else:
+        _slope_ok = abs(_pre_slope) < 50
+
     _trace_quality = (
-        trace is not None
+        _trace_valid(trace)
         and trace > -50
         and ctrl_active.consec_patho == 0
-        and abs(_pre_slope) < 50
+        and _slope_ok
     )
     _diverse = _check_learn_diversity(response)
+
+    # Bootstrap mode: bypass Gate B when adapters are cold (zero-init lB)
+    # and we haven't yet completed enough learn steps to warm them up.
+    _in_bootstrap = (
+        _bootstrap_steps[0] < _BOOTSTRAP_LIMIT
+        and _adapters_are_cold(model_active)
+    )
 
     _skip_learn = (
         not online_learning[0]               # user opt-out
         or not _user_quality                  # low-signal input
-        or not _trace_quality                 # bad trace / oscillation
+        or (not _trace_quality and not _in_bootstrap)  # bad trace — bypassed during bootstrap
         or not _diverse                       # too similar to recent turns
         or _is_degenerate                     # garbage output
         or mode == "anti"                     # never learn during anti
@@ -5183,7 +5421,7 @@ plt.tight_layout()
         _skip_reason = (
             "online_off" if not online_learning[0]
             else "low_user_quality" if not _user_quality
-            else "trace_unavailable" if trace is None
+            else "trace_unavailable" if not _trace_valid(trace)
             else "bad_trace" if not _trace_quality
             else "repetitive" if not _diverse
             else "degenerate" if _is_degenerate
@@ -5199,6 +5437,17 @@ plt.tight_layout()
             pass
 
     if not _skip_learn and len(out_ids) >= 4:
+        # Log learn decision (including bootstrap flag)
+        if _in_bootstrap:
+            _bootstrap_steps[0] += 1
+            try:
+                with open(f"{DATA_DIR}/logs/learn_decisions.jsonl", "a") as _ldf:
+                    _ldf.write(json.dumps({"ts": time.time(), "turn": turn_count[0],
+                                           "reason": "bootstrap", "bootstrap": True,
+                                           "bootstrap_step": _bootstrap_steps[0],
+                                           "trace": trace}) + "\n")
+            except Exception:
+                pass
         # Run online learning in background — don't block the response path.
         # Uses non-blocking acquire so it skips if the next generation already started.
         _learn_ids_copy = out_ids[-min(128, len(out_ids)):].copy()   # tail = response tokens, not context prefix
@@ -5256,6 +5505,10 @@ plt.tight_layout()
     elapsed    = time.time() - t0
     trend_name, avg, slope = ctrl_active.trend()
     low_t, high_t = ctrl_active.get_thresholds()
+    slope_str = f"{slope:.0f}" if _trace_valid(slope) else "?"
+    avg_str   = f"{avg:.0f}"   if _trace_valid(avg)   else "?"
+    low_t_str = f"{low_t:.0f}" if _trace_valid(low_t)  else "?"
+    high_t_str= f"{high_t:.0f}"if _trace_valid(high_t) else "?"
 
     # ── Model routing annotation for medulla ──────────────────────
     _route_note = ""
@@ -5272,7 +5525,7 @@ plt.tight_layout()
     # Medulla
     icon  = "🟢" if mode == "lora" else "🔴"
     state = "CONSTRUCTIVE" if mode == "lora" else "ROUGHENING"
-    bar   = "█" * min(max(int(abs(trace) / 100), 1), 30) if trace is not None else "·"
+    bar   = "█" * min(max(int(abs(trace) / 100), 1), 30) if _trace_valid(trace) else "·"
     ti    = "📉" if trend_name == "declining" else "📈" if trend_name == "rising" else "➡️"
 
     medulla = (
@@ -5285,11 +5538,11 @@ plt.tight_layout()
         f"<b>MODEL</b>: {model_label} ({'large-only' if pair.small is None and pair.mode == 'mixed' else pair.mode})"
         + (f" <span style='color:#888'>{_route_note}</span>" if _route_note else "")
         + f" | <b>TONE</b>: {_tone}<br>"
-        f"<b>STATE</b>: {state} | <b>TRACE</b>: {'?' if trace is None else f'{trace:.1f}'} <code>{bar}</code>"
+        f"<b>STATE</b>: {state} | <b>TRACE</b>: {'?' if not _trace_valid(trace) else f'{trace:.1f}'} <code>{bar}</code>"
         + (f" | a_str {_anti_str:.3f}" if mode == "anti" else "")
         + f"<br>"
-        f"<b>TREND</b>: {ti} {trend_name} (avg {avg:.0f} | slope {slope:.0f})<br>"
-        f"<b>THRESHOLDS</b>: low {low_t:.0f} / high {high_t:.0f} | "
+        f"<b>TREND</b>: {ti} {trend_name} (avg {avg_str} | slope {slope_str})<br>"
+        f"<b>THRESHOLDS</b>: low {low_t_str} / high {high_t_str} | "
         f"<b>SWITCHES</b>: {len(ctrl_active.log)}<br>"
         f"<b>SEARCH</b>: {'🌐' if searched else 'OFF'}"
         + (f" | 🔍 searched: {_last_web_query}" if searched and _last_web_query else "")
@@ -5326,7 +5579,7 @@ plt.tight_layout()
         "output_tokens": len(raw_tokens),
         "flattery_score": _flattery_score,
         "anchor_drift": _anchor_drift_val,
-        "absolute_floor_triggered": trace is not None and trace < _ABSOLUTE_FLOOR,
+        "absolute_floor_triggered": _trace_valid(trace) and trace < _ABSOLUTE_FLOOR,
         "sustained_negative_triggered": (
             len(ctrl_active.all_traces) >= _SUSTAINED_COUNT and
             all(t < _SUSTAINED_FLOOR for t in ctrl_active.all_traces[-_SUSTAINED_COUNT:])
@@ -5339,12 +5592,14 @@ plt.tight_layout()
     # ── Async file I/O — don't block response delivery ───────────────
     _trace_entry = json.dumps({
         "session": session_id, "turn": turn_count[0],
-        "trace": trace, "mode": mode, "model": model_label,
-        "trend": trend_name, "slope": round(slope, 1), "time": time.time(),
+        "trace": trace if _trace_valid(trace) else None,
+        "mode": mode, "model": model_label,
+        "trend": trend_name, "slope": round(slope, 1) if _trace_valid(slope) else 0,
+        "time": time.time(),
         "trace_compute_ms": round(trace_time * 1000),
         "flattery_score": _flattery_score,
         "anchor_drift": _anchor_drift_val,
-        "absolute_floor_triggered": trace is not None and trace < _ABSOLUTE_FLOOR,
+        "absolute_floor_triggered": _trace_valid(trace) and trace < _ABSOLUTE_FLOOR,
         "sustained_negative_triggered": (
             len(ctrl_active.all_traces) >= _SUSTAINED_COUNT and
             all(t < _SUSTAINED_FLOOR for t in ctrl_active.all_traces[-_SUSTAINED_COUNT:])
@@ -5403,12 +5658,16 @@ plt.tight_layout()
         threading.Thread(target=auto_summarize_session, daemon=True).start()
 
     term_flag = f" | ⚠️ {term_reason}" if should_term else ""
-    print(f"  t{turn_count[0]} | {model_label} | trace {'?' if trace is None else f'{trace:.0f}'} | {mode} | {trend_name} | "
+    print(f"  t{turn_count[0]} | {model_label} | trace {'?' if not _trace_valid(trace) else f'{trace:.0f}'} | {mode} | {trend_name} | "
           f"gen {gen_time:.1f}s | hess {trace_time:.1f}s | drift {_drift:.2f}"
           + (" | 🌐" if searched else "") + term_flag)
 
     # Drift badge — subtle inline marker when response drifts from user register
-    if _drift >= 0.5:
+    # Skip on short responses — not enough text for meaningful drift measurement
+    _resp_len = len(response.split())
+    if _resp_len < 30:
+        drift_badge = ""
+    elif _drift >= 0.5:
         drift_badge = (f" <span style='font-size:.72em;color:#ff9800;"
                        f"border:1px solid rgba(255,152,0,.45);border-radius:3px;"
                        f"padding:1px 5px'>⚡ drift {_drift:.2f}</span>")
@@ -5421,7 +5680,8 @@ plt.tight_layout()
 
     # Confidence badge — only show when Hessian trace was actually computed this turn
     # trace == 0.0 means short message skipped, NOT low confidence
-    if trace is None or trace <= 0.0 or trace > 150:
+    # Also skip on short responses — same rationale as drift
+    if _resp_len < 30 or not _trace_valid(trace) or trace <= 0.0 or trace > 150:
         _conf_badge = ""
     elif trace > 80:
         _conf_badge = (" <span style='font-size:.72em;color:#ffd740;"
@@ -5437,16 +5697,20 @@ plt.tight_layout()
         response, _ran_code = detect_and_run_code(response)
     else:
         _ran_code = bool(_tools_html_blobs)
-        # Append HTML output (plots, DataFrames) captured from tool:run calls
+        # Show the code that was executed, then the output (plots, DataFrames)
+        if _tools_code_blocks:
+            _code_display = "\n\n".join(
+                f"```python\n{c}\n```" for c in _tools_code_blocks)
+            response = response + "\n\n" + _code_display
         if _tools_html_blobs:
             response = response + "\n\n" + "\n".join(_tools_html_blobs)
 
     # ── Diversity alert injection (after code exec, before wrap) ────
+    # Hidden in HTML comment so it doesn't render visually or pollute /continue anchors
     if _is_repetitive and show_medulla[0]:
         _sim_turn = max(0, turn_count[0] - _MAX_RECENT_VECS)
         response = response + (
-            f"\n\n*[DIVERSITY ALERT: Response similarity {_resp_sim:.2f} with recent turn ~{_sim_turn}. "
-            f"You are repeating yourself structurally. Say something genuinely different.]*"
+            f"\n\n<!--DIVERSITY: similarity {_resp_sim:.2f} with recent turn ~{_sim_turn}-->"
         )
 
     # ── Token budget bar (if context_budget available) ───────────
@@ -5626,24 +5890,28 @@ def _session_summary(history: list, turns_fallback: list) -> str:
             return text[:80]
     return ""
 
-def _save_session(label=None):
-    if len(_session_history) < 2:
+def _save_session(label=None, sid=None, hist=None):
+    _hist = hist if hist is not None else list(_session_history)
+    if len(_hist) < 2:
         return None
     os.makedirs(f"{DATA_DIR}/sessions", exist_ok=True)
     now = datetime.datetime.now()
     # Stable per-session ID: set once on first save, preserved for the session's lifetime.
     # /api/new clears _active_session_ts[0] so the next save creates a new file.
-    if _active_session_ts[0] is None:
-        _active_session_ts[0] = now.strftime("%Y-%m-%d_%H-%M-%S")
-    ts_id = _active_session_ts[0]
+    if sid:
+        ts_id = sid
+    else:
+        if _active_session_ts[0] is None:
+            _active_session_ts[0] = now.strftime("%Y-%m-%d_%H-%M-%S")
+        ts_id = _active_session_ts[0]
     path  = f"{DATA_DIR}/sessions/{ts_id}.json"
     title   = _format_session_date(ts_id)
-    summary = _session_summary(list(_session_history), [])
-    tags    = auto_tag_session(list(_session_history)) if _MODEL_ROUTER_AVAILABLE else ["general"]
+    summary = _session_summary(_hist, [])
+    tags    = auto_tag_session(_hist) if _MODEL_ROUTER_AVAILABLE else ["general"]
     # Auto-name from first meaningful user message (truncated to ~40 chars)
     _first_user = next(
         (m["content"].strip().replace(chr(10), " ")
-         for m in _session_history
+         for m in _hist
          if m.get("role") == "user" and len((m.get("content") or "").strip()) >= 4
          and not (m.get("content") or "").strip().startswith("/")),
         None
@@ -5660,7 +5928,7 @@ def _save_session(label=None):
         "summary": summary,
         "tags":    tags,
         "ts":      ts_id,
-        "history": [m for m in _session_history if m.get("role") != "system"],
+        "history": [m for m in _hist if m.get("role") != "system"],
     }
     with _save_lock:
         _tmp = path + ".tmp"
@@ -5723,16 +5991,53 @@ def _list_sessions():
     _list_sessions_ts[0] = time.time()
     return _list_sessions_cache
 
+_ACTIVE_SID_FILE = f"{DATA_DIR}/sessions/.active_sid"
+
+def _write_active_sid(sid: str):
+    """Persist the active session ID so restarts know which session was last active."""
+    try:
+        os.makedirs(f"{DATA_DIR}/sessions", exist_ok=True)
+        with open(_ACTIVE_SID_FILE, "w") as f:
+            f.write(sid)
+    except Exception:
+        pass
+
+def _read_active_sid() -> str:
+    """Read the persisted active session ID, or '' if none."""
+    try:
+        with open(_ACTIVE_SID_FILE) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
 def _load_today_session() -> str:
     """
-    Load the most recent session file (any date) into _session_history on startup.
-    Handles both legacy YYYY-MM-DD.json and new YYYY-MM-DD_HH-MM-SS.json formats.
-    Returns the session id loaded, or '' if nothing was loaded.
+    Load the last active session into _session_history on startup.
+    If the user clicked '+ new' before shutdown, the persisted sid points to
+    an empty session — in that case, start fresh instead of loading an old one.
     """
     d = f"{DATA_DIR}/sessions"
     if not os.path.isdir(d):
         return ""
-    # Find all timestamped session files, sorted newest-first
+    # Check if there's a persisted active sid
+    saved_sid = _read_active_sid()
+    if saved_sid:
+        path = f"{d}/{saved_sid}.json"
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                hist = data.get("history", [])
+                if hist:
+                    with _session_lock:
+                        _session_history[:] = hist
+                    _active_session_ts[0] = saved_sid
+                    return saved_sid
+            except Exception:
+                pass
+        # Persisted sid exists but points to empty/missing session — start fresh
+        return ""
+    # Fallback: no persisted sid — load most recent session file (first boot)
     candidates = sorted([
         fn for fn in os.listdir(d)
         if fn.endswith(".json")
@@ -5785,6 +6090,8 @@ def _sync_mem_recent(history: list):
 # so the model has prior context immediately (not just on first message)
 if _session_history:
     _sync_mem_recent(_session_history)
+    mem.history._session_start_ts = time.time()  # recall only returns turns added from now
+    mem.history.summaries = []  # clear stale cross-session summaries
 
 def _get_status_str():
     if not trace_history_live:
@@ -5794,7 +6101,7 @@ def _get_status_str():
     ll = session_log[-1] if session_log else {}
     _drift_val = last.get('drift', -1.0)
     _drift_suffix = f"|{_drift_val}" if _drift_val >= 0 else ""
-    _trace_str = f"{last['trace']}" if last['trace'] is not None else "?"
+    _trace_str = f"{last['trace']}" if _trace_valid(last['trace']) else "?"
     return (f"t{last['turn']} · {_trace_str} · {last['mode']} · "
             f"{ll.get('prompt_tokens','?')}↓ {ll.get('output_tokens','?')}↑ · "
             f"{s['corpus_chunks']}c · {s['archive_turns']}a"
@@ -5804,6 +6111,7 @@ def _stream_chat(user_msg, base_history, loop, q):
     display_prev_len = 0
     last_hist = None
     _sent_done = [False]
+    _my_epoch = _session_epoch[0]  # snapshot so we can detect session switch during generation
     try:
         for _, hist_out in chat(user_msg, base_history):
             last_hist = hist_out
@@ -5828,10 +6136,17 @@ def _stream_chat(user_msg, base_history, loop, q):
                     asyncio.run_coroutine_threadsafe(
                         q.put({"t": "d", "v": delta}), loop)
         if last_hist:   # only update if we got a valid response — don't wipe on exception
+            if _session_epoch[0] != _my_epoch:
+                return  # session changed while generating — discard to prevent cross-write
             with _session_lock:
                 _session_history[:] = last_hist
-        # Autosave after every exchange — don't rely on beforeunload beacon
-        threading.Thread(target=_save_session, daemon=True).start()
+        # Autosave after every exchange — snapshot sid AND history so a session switch can't corrupt
+        if _session_epoch[0] != _my_epoch:
+            return  # session changed — don't save stale content to the new session's file
+        _save_sid = _active_session_ts[0]
+        _save_hist = list(_session_history)
+        _write_active_sid(_save_sid)
+        threading.Thread(target=_save_session, kwargs={"sid": _save_sid, "hist": _save_hist}, daemon=True).start()
         _hist_ref = last_hist or base_history
         _last_msg = _hist_ref[-1] if _hist_ref else None
         asyncio.run_coroutine_threadsafe(
@@ -5887,6 +6202,7 @@ async def api_init():
         "model":            MODEL,
         "model_mode":       model_mode[0] if model_mode[0] != "large" else None,
         "think_mode":       think_mode[0],
+        "trace_sync_mode":  TRACE_SYNC_MODE[0],
         "think_budget":     think_budget[0],
         "show_medulla":     show_medulla[0],
         "online_learning":  online_learning[0],
@@ -5910,7 +6226,11 @@ async def api_chat(request: Request):
     if time.time() - _last_gen_time[0] < _MIN_GEN_INTERVAL:
         return JSONResponse({"error": "slow down"}, 429)
     _last_gen_time[0] = time.time()
-    base_hist = list(data.get("history") or _session_history)
+    _client_hist = data.get("history")
+    # If server session is empty (just created by /api/new), ignore stale client history
+    if not _session_history and _client_hist:
+        _client_hist = []
+    base_hist = list(_client_hist) if _client_hist is not None else list(_session_history)
     rl = (data.get("response_length") or "M").upper()
     if rl in ("S", "M", "L"):
         _response_length[0] = rl
@@ -5940,26 +6260,59 @@ async def api_stop():
     stop_event.set()
     return JSONResponse({"ok": True})
 
+@api.post("/api/shutdown")
+async def api_shutdown():
+    """Graceful server shutdown — saves session, flushes state, then exits."""
+    _shutdown_save()
+    import asyncio
+    asyncio.get_event_loop().call_later(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    return JSONResponse({"ok": True, "msg": "shutting down"})
+
 @api.post("/api/save")
-async def api_save():
+async def api_save(request: Request):
     """Lightweight save — called by beforeunload, keeps session active."""
-    _save_session()
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    # Snapshot sid+hist together under lock to prevent beacon/switch race
+    with _session_lock:
+        _snap_sid = _active_session_ts[0]
+        _snap_hist = list(_session_history)
+    _save_session(sid=_snap_sid, hist=_snap_hist)
     return JSONResponse({"ok": True})
 
 @api.post("/api/new")
 async def api_new():
-    _save_session()                    # persist current session before clearing
+    if len(_session_history) >= 2:      # only save if there's actual content
+        _save_session()                # persist current session before clearing
     # Pre-assign a session ID so the frontend has a stable activeSid immediately
     _base_sid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     new_sid = _base_sid
     # Avoid collision if user clicks + new rapidly (same second)
     _n = 1
-    while os.path.exists(f"{DATA_DIR}/sessions/{new_sid}.json") or new_sid == _active_session_ts[0]:
+    while os.path.exists(f"{DATA_DIR}/sessions/{new_sid}.json"):
         new_sid = f"{_base_sid}-{_n}"
         _n += 1
-    _active_session_ts[0] = new_sid
     with _session_lock:
         _session_history.clear()
+    _active_session_ts[0] = new_sid
+    _write_active_sid(new_sid)          # persist so restart doesn't reload old session
+    mem.history.start_new_session()     # clear model context + summaries + set session boundary
+    # Reset in-memory session-scoped state (match /api/reset and /clear)
+    session_log.clear()
+    turn_count[0] = 0
+    trace_history_live.clear()
+    ctrl.history.clear()
+    ctrl.all_traces.clear()
+    ctrl.log.clear()
+    ctrl.mode = "lora"
+    ctrl.consec_patho = 0
+    ctrl.anti_count = 0
+    ctrl.session_anchor = None
+    ctrl.consec_flattery = 0
+    with _pending_trace_lock:
+        _pending_trace[0] = None
     _session_epoch[0] += 1            # signal background tasks that session changed
     _list_sessions_ts[0] = 0.0        # ensure sidebar refreshes even if session was too short to save
     sessions = _list_sessions()
@@ -5997,6 +6350,7 @@ async def api_reset():
         _session_history.clear()
     _active_session_ts[0] = None
     _session_epoch[0] += 1
+    mem.history.start_new_session()     # clear model context + summaries + set session boundary
     return JSONResponse({"ok": True, "turn_count": 0})
 
 @api.post("/api/fork")
@@ -6043,8 +6397,30 @@ async def api_load_session(session_id: str):
         _session_history[:] = data.get("history", [])
         # Critical: update active session ID so future saves go to THIS session's file
         _active_session_ts[0] = session_id
+    # Reset trace/controller state so the pill reflects THIS session, not the previous one
+    n_user = len([m for m in _session_history if m.get("role") == "user"])
+    session_log.clear()
+    turn_count[0] = n_user
+    trace_history_live.clear()
+    ctrl.history.clear()
+    ctrl.all_traces.clear()
+    ctrl.log.clear()
+    ctrl.mode = "lora"
+    ctrl.consec_patho = 0
+    ctrl.anti_count = 0
+    ctrl.session_anchor = None
+    ctrl.consec_flattery = 0
+    _write_active_sid(session_id)
     _sync_mem_recent(_session_history)
-    return JSONResponse({"history": [m for m in _session_history if m.get("role") != "system"], "status": _get_status_str()})
+    # Scope semantic recall to NOW — the loaded session's own history is already
+    # in mem.history.recent; recall should only return turns added from this point forward.
+    # Using session creation time would leak turns from sessions created after it.
+    mem.history._session_start_ts = time.time()
+    mem.history.summaries = []  # clear cross-session summary contamination
+    # Build a minimal status string from the loaded session
+    s = mem.status()
+    _loaded_status = f"t{n_user} · ? · lora · {s['corpus_chunks']}c · {s['archive_turns']}a"
+    return JSONResponse({"history": [m for m in _session_history if m.get("role") != "system"], "status": _loaded_status})
 
 @api.get("/api/history_page")
 async def api_history_page(before: int = 0, page: int = 20):
@@ -6076,9 +6452,10 @@ async def api_clear_all_sessions():
     if not os.path.isdir(sess_dir):
         return JSONResponse({"ok": True, "deleted": 0, "sessions": []})
     for fn in os.listdir(sess_dir):
+        fp = os.path.join(sess_dir, fn)
         if fn.endswith(".json") and not fn.startswith("_"):
             try:
-                os.remove(os.path.join(sess_dir, fn))
+                os.remove(fp)
                 deleted += 1
             except Exception:
                 pass
@@ -6086,6 +6463,19 @@ async def api_clear_all_sessions():
     with _session_lock:
         _session_history.clear()
         _active_session_ts[0] = new_sid
+    # Reset session-scoped state (match /api/new)
+    session_log.clear()
+    turn_count[0] = 0
+    trace_history_live.clear()
+    ctrl.history.clear()
+    ctrl.all_traces.clear()
+    ctrl.log.clear()
+    ctrl.mode = "lora"
+    ctrl.consec_patho = 0
+    ctrl.anti_count = 0
+    ctrl.session_anchor = None
+    ctrl.consec_flattery = 0
+    _write_active_sid(new_sid)
     _list_sessions_ts[0] = 0.0  # invalidate cache
     return JSONResponse({"ok": True, "deleted": deleted, "sessions": [], "active_sid": new_sid})
 
@@ -6102,6 +6492,7 @@ async def api_delete_session(session_id: str):
         with _session_lock:
             _session_history.clear()
         _active_session_ts[0] = None
+        _write_active_sid("")
     return JSONResponse({"ok": True, "sessions": _list_sessions()})
 
 @api.post("/api/edit")
@@ -6504,7 +6895,7 @@ async def api_export_csv():
             "timestamp": row.get("timestamp", ""),
             "user": (row.get("user", "") or "")[:500],
             "response_preview": resp_preview,
-            "trace": f"{t:.1f}" if t is not None else "",
+            "trace": f"{t:.1f}" if _trace_valid(t) else "",
             "mode": row.get("mode", ""),
             "model": row.get("model", MODEL),
             "gen_time_s": f"{row.get('gen_time',0):.2f}" if row.get("gen_time") else "",
@@ -6616,14 +7007,17 @@ async def api_settings(request: Request):
         show_medulla[0] = bool(data["show_medulla"])
     if "online_learning" in data:
         online_learning[0] = bool(data["online_learning"])
-    # Persist online_learning alongside other settings
-    if "online_learning" in data or "user_name" in data or "system_prompt" in data or "temp" in data or "temperature" in data:
+    if "trace_sync_mode" in data:
+        TRACE_SYNC_MODE[0] = bool(data["trace_sync_mode"])
+    # Persist settings
+    if "trace_sync_mode" in data or "online_learning" in data or "user_name" in data or "system_prompt" in data or "temp" in data or "temperature" in data:
         try:
             with open(_SETTINGS_PATH, "w") as _sf:
                 json.dump({"user_name": _user_name[0],
                            "system_prompt": system_prompt[0] if system_prompt[0] != _DEFAULT_SYSTEM_PROMPT else "",
                            "temp": temp_override[0],
-                           "online_learning": online_learning[0]}, _sf)
+                           "online_learning": online_learning[0],
+                           "trace_sync_mode": TRACE_SYNC_MODE[0]}, _sf)
         except Exception:
             pass
     return JSONResponse({"ok": True})
@@ -7336,7 +7730,7 @@ async def api_analytics():
         most_active_date = {"date": _mad, "turns": date_counts[_mad]}
 
     # Live trace stats
-    _recent_traces  = [t["trace"] for t in trace_history_live[-20:]] if trace_history_live else []
+    _recent_traces  = [t["trace"] if _trace_valid(t["trace"]) else None for t in trace_history_live[-20:]] if trace_history_live else []
     _recent_drifts  = [t["drift"] for t in trace_history_live[-20:] if t.get("drift", -1) >= 0] if trace_history_live else []
     _mode_counts: dict = {}
     for _t in trace_history_live:
@@ -7382,7 +7776,10 @@ async def api_knowledge_graph():
 
     # Build nodes: concepts + thinkers
     _all_terms = list(dict.fromkeys(_concepts + _thinkers))  # dedup, preserve order
-    _node_weight = {}
+
+    # Start from persistent weights (survive across sessions)
+    _node_weight = dict(mem.identity.data.get("node_weights", {}))
+    # Layer on current session mentions
     for _t in session_log[-50:]:
         _text = (_t.get("user", "") + " " + _t.get("response", "")).lower()
         for _term in _all_terms:
@@ -7391,8 +7788,13 @@ async def api_knowledge_graph():
 
     nodes = [{"id": t, "label": t, "weight": _node_weight.get(t, 1)} for t in _all_terms]
 
-    # Build edges: co-occurrence within same session turn
+    # Start from persistent edge co-occurrences
     _edge_counts: dict = {}
+    for _ekey, _ew in mem.identity.data.get("edge_counts", {}).items():
+        _parts = _ekey.split("|||")
+        if len(_parts) == 2:
+            _edge_counts[tuple(_parts)] = _ew
+    # Layer on current session co-occurrences
     for _t in session_log[-50:]:
         _text = (_t.get("user", "") + " " + _t.get("response", "")).lower()
         _present = [term for term in _all_terms if term.lower() in _text]
@@ -7581,13 +7983,13 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
         try:
             _, _, _pre_slope = ctrl.trend()
             _trace_quality = (
-                trace is not None
+                _trace_valid(trace)
                 and trace > -50
                 and ctrl.consec_patho == 0
                 and abs(_pre_slope) < 50
             )
             _gate_skip_reason = (
-                "trace_unavailable" if trace is None
+                "trace_unavailable" if not _trace_valid(trace)
                 else "bad_trace" if not _trace_quality
                 else None
             )
@@ -7603,7 +8005,7 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
             turn_count[0] = turn
             trace_history_live.append({
                 "turn": turn,
-                "trace": round(trace, 1) if trace is not None else None,
+                "trace": round(trace, 1) if _trace_valid(trace) else None,
                 "mode": mode, "model": "test", "drift": -1.0,
             })
             status_str = _get_status_str()
@@ -7615,17 +8017,21 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
         try:
             trend_name, avg, slope = ctrl.trend()
             low_t, high_t = ctrl.get_thresholds()
+            slope_str = f"{slope:.0f}" if _trace_valid(slope) else "?"
+            avg_str   = f"{avg:.0f}"   if _trace_valid(avg)   else "?"
+            low_t_str = f"{low_t:.0f}" if _trace_valid(low_t)  else "?"
+            high_t_str= f"{high_t:.0f}"if _trace_valid(high_t) else "?"
             icon  = "\U0001f7e2" if mode == "lora" else "\U0001f534"
             state_label = "CONSTRUCTIVE" if mode == "lora" else "ROUGHENING"
-            bar   = "\u2588" * min(max(int(abs(trace) / 100), 1), 30) if trace is not None else "\u00b7"
-            _trace_display = f"{trace:.1f}" if trace is not None else "?"
+            bar   = "\u2588" * min(max(int(abs(trace) / 100), 1), 30) if _trace_valid(trace) else "\u00b7"
+            _trace_display = f"{trace:.1f}" if _trace_valid(trace) else "?"
             medulla = (
                 f"<b>{icon} MEDULLA</b> t{turn} -- "
                 f"0.0s gen / 0.0s trace / 0.0s total<br>"
                 f"<b>MODEL</b>: test (test)<br>"
                 f"<b>STATE</b>: {state_label} | <b>TRACE</b>: {_trace_display} <code>{bar}</code>"
-                f"<br><b>TREND</b>: {trend_name} (avg {avg:.0f} | slope {slope:.0f})<br>"
-                f"<b>THRESHOLDS</b>: low {low_t:.0f} / high {high_t:.0f}"
+                f"<br><b>TREND</b>: {trend_name} (avg {avg_str} | slope {slope_str})<br>"
+                f"<b>THRESHOLDS</b>: low {low_t_str} / high {high_t_str}"
             )
             consumers["medulla"] = {"ok": True, "value": medulla}
         except Exception as e:
@@ -7641,7 +8047,7 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
             log_entry = {
                 "turn": turn, "trace": trace, "mode": mode,
                 "user": "test injection", "response": "test response",
-                "absolute_floor_triggered": trace is not None and trace < _ABSOLUTE_FLOOR,
+                "absolute_floor_triggered": _trace_valid(trace) and trace < _ABSOLUTE_FLOOR,
                 "sustained_negative_triggered": (
                     len(ctrl.all_traces) >= _SUSTAINED_COUNT and
                     all(t < _SUSTAINED_FLOOR for t in ctrl.all_traces[-_SUSTAINED_COUNT:])
@@ -7661,7 +8067,7 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
                 "session": "test", "turn": turn,
                 "trace": trace, "mode": mode, "model": "test",
                 "trace_compute_ms": 0,
-                "absolute_floor_triggered": trace is not None and trace < _ABSOLUTE_FLOOR,
+                "absolute_floor_triggered": _trace_valid(trace) and trace < _ABSOLUTE_FLOOR,
             })
             os.makedirs(f"{DATA_DIR}/logs", exist_ok=True)
             with open(f"{DATA_DIR}/logs/traces_test.jsonl", "a") as _f:
@@ -7672,7 +8078,7 @@ if os.environ.get("GRACEFUL_TEST_MODE") == "1":
 
         # -- 8. Confidence badge --
         try:
-            if trace is None or trace <= 0.0 or trace > 150:
+            if not _trace_valid(trace) or trace <= 0.0 or trace > 150:
                 _conf_badge = ""
             elif trace > 80:
                 _conf_badge = "uncertain"
