@@ -5168,7 +5168,8 @@ plt.tight_layout()
     try:
         _tok_inner = tok_active.tokenizer if hasattr(tok_active, 'tokenizer') else tok_active
         _out_token_list = _tok_inner.encode(_full_text)[-MAX_CTX:]
-    except Exception:
+    except Exception as _enc_err:
+        print(f"[TRACE] tokenizer encode failed: {_enc_err}", file=sys.stderr, flush=True)
         _out_token_list = []
     out_ids = np.array(_out_token_list, dtype=np.int32)
     response = "".join(raw_tokens)
