@@ -695,17 +695,24 @@ input[type=range]{accent-color:var(--primary)!important;}
       <div id="temp-disp" style="font-size:.7em;color:var(--text3);font-family:var(--mono);margin-top:3px">0.00 — precise · auto-steer</div>
     </div>
     <div class="s-sec">
-      <div class="s-lbl">Your Name <span id="name-saved" style="font-size:.68em;color:#4ade80;opacity:0;transition:opacity .25s;margin-left:6px;font-weight:400"></span></div>
-      <input class="s-inp" id="user-name" placeholder="What should it call you?">
-      <div class="s-row"><button class="s-btn pri" id="name-set">Set</button><button class="s-btn" id="name-clear">&#x21BA; Clear</button></div>
+      <div class="s-lbl">Personality</div>
+      <div style="margin-top:6px">
+        <div class="s-sub" style="margin-bottom:4px">Assistant name</div>
+        <input class="s-inp" id="assistant-name" placeholder="Graceful" style="margin-bottom:8px">
+        <div class="s-sub" style="margin-bottom:4px">Your name</div>
+        <input class="s-inp" id="user-name" placeholder="What should it call you?" style="margin-bottom:8px">
+        <span id="name-saved" style="font-size:.68em;color:#4ade80;opacity:0;transition:opacity .25s;font-weight:400"></span>
+      </div>
     </div>
     <div class="s-sec">
       <div class="s-lbl">System Prompt <span id="sp-saved" style="font-size:.68em;color:#4ade80;opacity:0;transition:opacity .25s;margin-left:6px;font-weight:400"></span></div>
-      <textarea class="s-ta" id="sys-prompt" placeholder="e.g. 'be concise'..."></textarea>
+      <textarea class="s-ta" id="sys-prompt" placeholder="e.g. 'be concise'..." rows="5"></textarea>
       <div class="s-row">
-        <button class="s-btn pri" id="sys-set">Set</button>
-        <button class="s-btn" id="sys-clear">&#x21BA; Clear</button>
+        <button class="s-btn pri" id="persona-save">Save</button>
+        <button class="s-btn" id="persona-revert">&#x21BA; Starter</button>
+        <button class="s-btn" id="sys-clear">Discard</button>
       </div>
+      <select id="starter-select" class="s-inp" style="display:none;margin-top:6px;cursor:pointer"></select>
     </div>
     <div class="s-sec">
       <div class="s-lbl">Index Corpus</div>
@@ -2128,6 +2135,7 @@ async function init(){
     var td=document.getElementById("temp-disp");if(td&&typeof _tempMood==="function"){var tv=d.temp||0;td.textContent=tv.toFixed(2)+" — "+_tempMood(tv);}
     var sp=document.getElementById("sys-prompt");if(sp)sp.value=d.system_prompt||"";
     var un=document.getElementById("user-name");if(un)un.value=d.user_name||"";
+    var an=document.getElementById("assistant-name");if(an)an.value=_aName!=="Graceful"?_aName:"";
     var _tv=d.temperature||d.temp||0;
     var tsl2=document.getElementById("temp-sl");if(tsl2)tsl2.value=_tv;
     var td2=document.getElementById("temp-disp");if(td2&&typeof _tempMood==="function")td2.textContent=_tv.toFixed(2)+" — "+_tempMood(_tv);
@@ -2285,21 +2293,34 @@ document.addEventListener("DOMContentLoaded",function(){
   };
   function _spFlash(msg){var el=document.getElementById("sp-saved");if(!el)return;el.textContent=msg;el.style.opacity="1";setTimeout(function(){el.style.opacity="0";},2200);}
   function _nameFlash(msg){var el=document.getElementById("name-saved");if(!el)return;el.textContent=msg;el.style.opacity="1";setTimeout(function(){el.style.opacity="0";},2200);}
-  document.getElementById("name-set").onclick=function(){
-    var v=document.getElementById("user-name").value.trim();
-    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({user_name:v})}).then(function(){_nameFlash(v?"set ✓":"cleared");});
+  document.getElementById("persona-save").onclick=function(){
+    var an=document.getElementById("assistant-name").value.trim()||"Graceful";
+    var un=document.getElementById("user-name").value.trim();
+    var sp=document.getElementById("sys-prompt").value;
+    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({assistant_name:an,user_name:un,system_prompt:sp})}).then(function(){
+      _spFlash("saved ✓");_nameFlash("saved ✓");
+      var _mb=document.getElementById("model-badge");if(_mb)_mb.textContent=an+" \u00b7 Gemma 4 E4B";
+      var _sl=document.getElementById("sidebar-model-label");if(_sl)_sl.textContent=an+" \u00b7 Gemma 4 E4B 4-bit";
+    });
   };
-  document.getElementById("name-clear").onclick=function(){
-    document.getElementById("user-name").value="";
-    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({user_name:""})}).then(function(){_nameFlash("cleared");});
-  };
-  document.getElementById("sys-set").onclick=function(){
-    var v=document.getElementById("sys-prompt").value;
-    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_prompt:v})}).then(function(){_spFlash(v.trim()?"set ✓":"cleared");});
+  document.getElementById("persona-revert").onclick=async function(){
+    var sel=document.getElementById("starter-select");
+    if(sel.style.display==="none"){
+      try{
+        var r=await fetch("/api/starter_prompts");var d=await r.json();
+        sel.innerHTML="";
+        d.starters.forEach(function(s){var o=document.createElement("option");o.value=s.content;o.textContent=s.name;sel.appendChild(o);});
+        sel.style.display="block";
+      }catch(e){_spFlash("error loading starters");}
+    }else{
+      var chosen=sel.value;
+      if(chosen){document.getElementById("sys-prompt").value=chosen;_spFlash("loaded — hit Save to apply");}
+      sel.style.display="none";
+    }
   };
   document.getElementById("sys-clear").onclick=function(){
     document.getElementById("sys-prompt").value="";
-    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_prompt:""})}).then(function(){_spFlash("cleared");});
+    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_prompt:""})}).then(function(){_spFlash("reverted to default");});
   };
   document.getElementById("index-btn").onclick=async function(){
     var p=document.getElementById("corpus-path").value.trim();if(!p)return;

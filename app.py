@@ -6880,6 +6880,31 @@ async def api_settings(request: Request):
                 pass
     return JSONResponse({"ok": True})
 
+@api.get("/api/starter_prompts")
+async def api_starter_prompts():
+    """Return available starter prompts from starter_prompts/ directory."""
+    starters_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "starter_prompts")
+    starters = []
+    if os.path.isdir(starters_dir):
+        for fn in sorted(os.listdir(starters_dir)):
+            if fn.endswith(".txt"):
+                try:
+                    content = open(os.path.join(starters_dir, fn)).read().strip()
+                    name = fn[:-4]  # strip .txt
+                    starters.append({"name": name, "content": content})
+                except Exception:
+                    pass
+    return JSONResponse({"starters": starters})
+
+@api.get("/api/personality")
+async def api_personality_get():
+    """Return current personality state for sidebar population."""
+    return JSONResponse({
+        "assistant_name": _assistant_name[0],
+        "user_name": _user_name[0],
+        "system_prompt": system_prompt[0],
+    })
+
 @api.post("/api/model_mode")
 async def api_model_mode(request: Request):
     data = await request.json()
