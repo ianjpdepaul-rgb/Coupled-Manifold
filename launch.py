@@ -396,7 +396,7 @@ class App(tk.Tk):
     # ══════════════════════════════════════════════════════════════════════
     # SETUP WIZARD  (first run)
     # ══════════════════════════════════════════════════════════════════════
-    STEP_NAMES = ["Install", "Keys", "Model", "Done"]
+    STEP_NAMES = ["Install", "Keys", "Model", "You", "Done"]
 
     def _build_setup(self):
         self.geometry("720x800")
@@ -446,7 +446,7 @@ class App(tk.Tk):
         self._clear()
         self._set_step(step)
         [self._step_install, self._step_keys,
-         self._step_model,   self._step_done][step]()
+         self._step_model,   self._step_persona, self._step_done][step]()
 
     # ── Step 0: Install ───────────────────────────────────────────────────
     def _step_install(self):
@@ -719,7 +719,101 @@ class App(tk.Tk):
 
         threading.Thread(target=_run, daemon=True).start()
 
-    # ── Step 3: Done ──────────────────────────────────────────────────────
+    # ── Step 3: Persona ──────────────────────────────────────────────────
+    def _step_persona(self):
+        tk.Label(self._area, text="Make it yours",
+                 font=("SF Pro Display", 15, "bold"), bg=BG, fg=FG).pack(anchor=tk.W)
+        tk.Label(self._area,
+                 text="You can change any of this later with /persona in the chat.",
+                 font=("SF Pro Display", 11), bg=BG, fg=FG2,
+                 wraplength=640, justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 14))
+
+        # Name field
+        name_row = tk.Frame(self._area, bg=BG)
+        name_row.pack(fill=tk.X, pady=4)
+        tk.Label(name_row, text="What should Graceful call you?",
+                 font=("SF Pro Display", 11, "bold"),
+                 bg=BG, fg=FG, anchor=tk.W).pack(side=tk.LEFT)
+        self._persona_name = tk.StringVar()
+        tk.Entry(name_row, textvariable=self._persona_name, font=MONO,
+                 bg=BG3, fg=FG, insertbackground=GREEN,
+                 relief=tk.FLAT, bd=6, width=20).pack(side=tk.LEFT, padx=(10, 0))
+
+        tk.Frame(self._area, bg=BG3, height=1).pack(fill=tk.X, pady=14)
+
+        # Personality prompt
+        tk.Label(self._area, text="Personality prompt",
+                 font=("SF Pro Display", 11, "bold"),
+                 bg=BG, fg=FG, anchor=tk.W).pack(anchor=tk.W)
+        tk.Label(self._area,
+                 text="How should Graceful talk to you? Edit below or leave the default.",
+                 font=("SF Pro Display", 10), bg=BG, fg=FG2).pack(anchor=tk.W, pady=(2, 6))
+
+        # Load default prompt
+        default_prompt = ""
+        for candidate in [
+            os.path.join(DIR, "default_system_prompt.txt"),
+        ]:
+            if os.path.isfile(candidate):
+                try:
+                    default_prompt = open(candidate).read().strip()
+                    break
+                except Exception:
+                    pass
+        if not default_prompt:
+            default_prompt = "You are Graceful, a local AI assistant. You speak directly and do not flatter."
+
+        self._persona_text = scrolledtext.ScrolledText(
+            self._area, height=8, font=MONO,
+            bg="#050505", fg="#7dd9a0", insertbackground=GREEN,
+            relief=tk.FLAT, borderwidth=0, wrap=tk.WORD,
+        )
+        self._persona_text.insert("1.0", default_prompt)
+        self._persona_text.pack(fill=tk.BOTH, expand=True)
+
+        brow = tk.Frame(self._area, bg=BG)
+        brow.pack(fill=tk.X, pady=(14, 0))
+        tk.Button(brow, text="Skip  →", font=("SF Pro Display", 12),
+                  bg=BG3, fg=FG2, relief=tk.FLAT, padx=16, pady=8,
+                  cursor="hand2", command=lambda: self._goto(4)).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(brow, text="Save & Continue  →",
+                  font=("SF Pro Display", 13, "bold"),
+                  bg=GREEN, fg="#000", relief=tk.FLAT, padx=22, pady=8,
+                  cursor="hand2", command=self._save_persona).pack(side=tk.RIGHT)
+
+    def _save_persona(self):
+        name = self._persona_name.get().strip()
+        prompt_text = self._persona_text.get("1.0", tk.END).strip()
+
+        # Save config.json
+        config = {}
+        config_path = os.path.join(DATA_DIR, "config.json")
+        if os.path.exists(config_path):
+            try:
+                config = json.load(open(config_path))
+            except Exception:
+                pass
+
+        if name:
+            config["user_name"] = name
+        os.makedirs(DATA_DIR, exist_ok=True)
+        json.dump(config, open(config_path, "w"), indent=2)
+
+        # Save personality prompt
+        personalities_dir = os.path.join(DATA_DIR, "personalities")
+        os.makedirs(personalities_dir, exist_ok=True)
+        if name:
+            fname = f"{name.lower()}_system_prompt.txt"
+            config["personality_prompt"] = f"personalities/{fname}"
+            json.dump(config, open(config_path, "w"), indent=2)
+        else:
+            fname = "default_system_prompt.txt"
+        with open(os.path.join(personalities_dir, fname), "w") as f:
+            f.write(prompt_text)
+
+        self._goto(4)
+
+    # ── Step 4: Done ──────────────────────────────────────────────────────
     def _step_done(self):
         tk.Label(self._area, text="Setup complete.",
                  font=("SF Pro Display", 22, "bold"), bg=BG, fg=GREEN).pack(pady=(40, 8))

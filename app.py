@@ -1496,17 +1496,83 @@ _dream_injection  = [None]   # T4-1: free ideation injection
 _scaffold_injection = [None] # T2-5: scaffold topic injection
 _reading_injection  = [None] # T4-3: reading list injection
 _response_length  = ["M"]    # T2-1: S/M/L brevity control from frontend
-_DEFAULT_SYSTEM_PROMPT = (
-    "You have genuine opinions and real standards. Give them directly — no preamble, no flattery, "
-    "no 'great question.' Meet the person where they are, then pull one step further.\n\n"
-    "Never trade quality for approval. If something is wrong, say it's wrong. "
-    "If the question is sloppy, ask what they actually mean. "
-    "If something is genuinely good, say why — specifically.\n\n"
-    "SHOW > DESCRIBE. Math? Write the equation. Code? Write it AND run it. Plot? Show the plot. "
-    "The concrete thing IS the answer. Never describe doing something you can just do.\n\n"
-    "Don't reference things that haven't come up in the conversation. "
-    "If something is mentioned that doesn't exist in context, ask rather than invent."
-)
+
+# ── Personality prompt loading ────────────────────────────────────────────────
+# Cascade: user personality file → default personality file → shipped default
+_PERSONALITIES_DIR = f"{DATA_DIR}/personalities"
+_CONFIG_PATH       = f"{DATA_DIR}/config.json"
+
+def _load_personality_prompt() -> str:
+    """Load system prompt from personality files with fallback cascade.
+    1. manifold_data/personalities/<name>_system_prompt.txt (user-specific)
+    2. manifold_data/personalities/default_system_prompt.txt
+    3. default_system_prompt.txt at repo root (shipped neutral default)
+    4. Hardcoded fallback
+    """
+    # Read config for user name / explicit prompt path
+    config = _load_user_config()
+    name = config.get("user_name", "").strip()
+
+    # Try user-specific personality first
+    if name:
+        user_file = os.path.join(_PERSONALITIES_DIR, f"{name.lower()}_system_prompt.txt")
+        if os.path.isfile(user_file):
+            try:
+                return open(user_file).read().strip()
+            except Exception:
+                pass
+
+    # Explicit personality_prompt path in config
+    pp = config.get("personality_prompt", "").strip()
+    if pp:
+        pp_full = os.path.join(DATA_DIR, pp) if not os.path.isabs(pp) else pp
+        if os.path.isfile(pp_full):
+            try:
+                return open(pp_full).read().strip()
+            except Exception:
+                pass
+
+    # Default personality in manifold_data
+    default_local = os.path.join(_PERSONALITIES_DIR, "default_system_prompt.txt")
+    if os.path.isfile(default_local):
+        try:
+            return open(default_local).read().strip()
+        except Exception:
+            pass
+
+    # Shipped default at repo root
+    shipped = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default_system_prompt.txt")
+    if os.path.isfile(shipped):
+        try:
+            return open(shipped).read().strip()
+        except Exception:
+            pass
+
+    # Hardcoded fallback — should never reach here in normal operation
+    return (
+        "You are Graceful, a local AI assistant running on the user's Mac. "
+        "You converse naturally and helpfully. You do not flatter. You speak directly."
+    )
+
+
+def _load_user_config() -> dict:
+    """Load manifold_data/config.json."""
+    if os.path.exists(_CONFIG_PATH):
+        try:
+            return json.load(open(_CONFIG_PATH))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_user_config(config: dict):
+    """Save manifold_data/config.json."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(_CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
+
+
+_DEFAULT_SYSTEM_PROMPT = _load_personality_prompt()
 
 # Locked base — always injected regardless of user-set system prompt.
 # This is the product's non-negotiable floor: epistemic honesty + no sycophancy.
@@ -1517,7 +1583,7 @@ _LOCKED_BASE = (
     "retrieving one, show the reasoning so the person can catch where it breaks. "
     "Never state uncertainty confidently. Never perform certainty you don't have."
 )
-system_prompt = [_DEFAULT_SYSTEM_PROMPT]    # user-defined system prompt, prepended to all sessions
+system_prompt = [_DEFAULT_SYSTEM_PROMPT]    # active system prompt, prepended to all sessions
 _user_name    = [""]    # optional — injected into system prompt as "You're talking to <name>."
 online_learning = [True]   # user toggle: online LoRA updates after good turns
 
@@ -1540,6 +1606,12 @@ try:
             TRACE_SYNC_MODE[0] = bool(_saved["trace_sync_mode"])
 except (FileNotFoundError, json.JSONDecodeError):
     pass  # first run or corrupt file — use defaults
+
+# Also load user_name from config.json if not already set via user_settings
+if not _user_name[0]:
+    _boot_config = _load_user_config()
+    if _boot_config.get("user_name", "").strip():
+        _user_name[0] = _boot_config["user_name"].strip()
 _learn_step_count = [0]    # cumulative learn steps — used for LR decay
 _bootstrap_steps  = [0]    # bootstrap learn steps with cold adapters (Gate B bypassed)
 _BOOTSTRAP_LIMIT  = 10     # max bootstrap steps before requiring real trace signal
@@ -2656,6 +2728,64 @@ def chat(user_msg, history):
             mem.identity.data["raw_notes"] = mem.identity.data["raw_notes"][-50:]
         mem.identity._save()
         reply = f"**Noted.** Added to identity model:\n\n> {statement}"
+        history = list(history or [])
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        yield "", history
+        return
+
+    # /persona — view or change personality configuration
+    if user_msg.lower().startswith("/persona"):
+        args = user_msg[8:].strip()
+        config = _load_user_config()
+        if not args:
+            # Show current config
+            _pn = _user_name[0] or "(not set)"
+            _pp = config.get("personality_prompt", "(default)")
+            _preview = system_prompt[0][:200] + "…" if len(system_prompt[0]) > 200 else system_prompt[0]
+            reply = (
+                f"**Personality Configuration**\n\n"
+                f"**Name:** {_pn}\n"
+                f"**Prompt file:** {_pp}\n\n"
+                f"**Active prompt preview:**\n> {_preview}\n\n"
+                f"**Usage:**\n"
+                f"- `/persona name Alex` — set your name\n"
+                f"- `/persona reset` — reload from personality files\n"
+                f"- `/persona prompt <text>` — set a custom system prompt"
+            )
+        elif args.lower().startswith("name "):
+            new_name = args[5:].strip()
+            _user_name[0] = new_name
+            config["user_name"] = new_name
+            _save_user_config(config)
+            # Also persist to user_settings.json for backward compat
+            try:
+                us = json.load(open(_SETTINGS_PATH)) if os.path.exists(_SETTINGS_PATH) else {}
+                us["user_name"] = new_name
+                json.dump(us, open(_SETTINGS_PATH, "w"))
+            except Exception:
+                pass
+            reply = f"**Name set to:** {new_name}\n\nGraceful will address you by name going forward."
+        elif args.lower() == "reset":
+            new_prompt = _load_personality_prompt()
+            system_prompt[0] = new_prompt
+            reply = "**Personality prompt reloaded** from files."
+        elif args.lower().startswith("prompt "):
+            custom = args[7:].strip()
+            if custom:
+                system_prompt[0] = custom
+                # Persist to user_settings.json
+                try:
+                    us = json.load(open(_SETTINGS_PATH)) if os.path.exists(_SETTINGS_PATH) else {}
+                    us["system_prompt"] = custom
+                    json.dump(us, open(_SETTINGS_PATH, "w"))
+                except Exception:
+                    pass
+                reply = f"**System prompt updated.** Active for this session and future sessions."
+            else:
+                reply = "Usage: `/persona prompt <your custom prompt text>`"
+        else:
+            reply = "Unknown subcommand. Try `/persona`, `/persona name Alex`, `/persona reset`, or `/persona prompt <text>`."
         history = list(history or [])
         history.append({"role": "user", "content": user_msg})
         history.append({"role": "assistant", "content": reply})
@@ -4410,7 +4540,7 @@ plt.tight_layout()
         _known_cmds = {
             "/who","/stats","/recap","/summarize","/check","/rephrase","/mood",
             "/export","/clear","/trace","/spectrum","/experiment","/antagonist",
-            "/socratic","/compress","/version","/iam","/forget","/find","/pin",
+            "/socratic","/compress","/version","/iam","/forget","/find","/pin","/persona",
             "/save","/load","/finetune","/run","/plot","/calc","/math","/analyze",
             "/adapter","/visionquality","/scaffold","/remember","/recall","/timer",
             "/search","/debate","/eli5","/teacher","/brainstorm","/devil","/peer",
@@ -4452,6 +4582,9 @@ plt.tight_layout()
 
     # ── Inject system prompt (user-defined + think mode + tone + tool dispatch) ──
     _sys_content = system_prompt[0].strip()
+    # Substitute {user_name} placeholder if present in personality prompt
+    _un = _user_name[0] or "the user"
+    _sys_content = _sys_content.replace("{user_name}", _un)
     if _user_name[0]:
         _sys_content = f"You're talking to {_user_name[0]}.\n\n" + _sys_content
     # Locked base always appended — not overridable by user settings

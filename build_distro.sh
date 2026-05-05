@@ -53,7 +53,7 @@ for f in "$DIR"/*.py; do
     cp "$f" "$DEST/$fname" && echo "    + $fname"
 done
 # Copy non-Python required files
-for f in requirements.txt README.md LICENSE icon.png setup.sh grace_system_prompt.txt; do
+for f in requirements.txt README.md LICENSE icon.png setup.sh default_system_prompt.txt; do
     [ -f "$DIR/$f" ] && cp "$DIR/$f" "$DEST/$f" && echo "    + $f"
 done
 

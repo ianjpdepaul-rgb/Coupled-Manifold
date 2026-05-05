@@ -19,12 +19,17 @@ manifold_data/keys.json
 manifold_data/last_seen.json
 manifold_data/named_memory.json
 manifold_data/user_settings.json
+manifold_data/config.json
 manifold_data/manifold.lock
 manifold_data/.corpus_seeded
 manifold_data/archives/
 manifold_data/checkpoints_ARCHIVE_2026-04-18_pre-sync-fix/
 manifold_data/checkpoints_PRE_CLEAN_2026-04-17/
 manifold_data/sessions_PRE_CLEAN_2026-04-17/
+
+# Personality prompts — user-specific, never commit
+*_system_prompt.txt
+manifold_data/personalities/
 
 # OS
 .DS_Store
