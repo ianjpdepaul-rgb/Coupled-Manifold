@@ -6091,6 +6091,12 @@ def _stream_chat(user_msg, base_history, loop, q):
             asyncio.run_coroutine_threadsafe(
                 q.put({"t": "err", "v": f"stream error: {_worker_ex}",
                        "status": _get_status_str()}), loop)
+    finally:
+        # Always decrement — prevents counter drift when chat() handles slash commands
+        # that return early without reaching _model_lock.acquire() (where the other
+        # decrement lives).  max(0,...) prevents underflow on the generation path
+        # where the lock-acquire decrement already fired.
+        _user_request_pending[0] = max(0, _user_request_pending[0] - 1)
 
 async def _sse_response(worker_fn, *args):
     loop = asyncio.get_running_loop()
