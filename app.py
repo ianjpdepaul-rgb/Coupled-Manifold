@@ -1946,7 +1946,8 @@ def check_response_diversity(response: str) -> tuple:
         if len(_recent_response_vecs) > _MAX_RECENT_VECS:
             _recent_response_vecs.pop(0)
         return max_sim > 0.85, round(max_sim, 3)
-    except Exception:
+    except Exception as _div_err:
+        print(f"[DIVERSITY] check_response_diversity error: {_div_err}", file=sys.stderr, flush=True)
         return False, 0.0
 
 def build_corpus_centroid():
@@ -1968,7 +1969,8 @@ def compute_drift(text):
         nv = np.linalg.norm(v)
         if nc == 0 or nv == 0: return -1.0
         return round(float(1.0 - np.dot(_corpus_centroid, v)/(nc*nv)), 3)
-    except Exception:
+    except Exception as _drift_err:
+        print(f"[DRIFT] compute_drift error: {_drift_err}", file=sys.stderr, flush=True)
         return -1.0
 
 def should_suggest_redirect() -> tuple:
@@ -5018,7 +5020,8 @@ plt.tight_layout()
             prompt = _tok_inner.apply_chat_template(
                 _cur_messages, tokenize=False, add_generation_prompt=True
             )
-        except Exception:
+        except Exception as _tmpl_err:
+            print(f"[CHAT] chat template failed, using Qwen fallback: {_tmpl_err}", file=sys.stderr, flush=True)
             # Fallback: Qwen-style im_start/im_end tokens — handles multi-line content
             # and avoids false-positive role detection on `:` in content.
             _role_map = {"system": "system", "user": "user", "assistant": "assistant"}
