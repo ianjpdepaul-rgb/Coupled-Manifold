@@ -2,24 +2,24 @@
 
 ## Current State
 
-All core logic lives in `app.py` (8,156 lines). Supporting modules exist but were
-extracted ad hoc. No test infrastructure beyond custom test harnesses.
+All core logic lives in `app.py` (~8,193 lines). Supporting modules exist but were
+extracted ad hoc. Test suite: 136 tests across 9 files (`tests/test_*.py`).
 
 ### Source Files
 
 | File | Lines | Role |
 |---|---|---|
-| `app.py` | ~7,857 | Startup, model, trace, chat, UI, server |
+| `app.py` | ~8,193 | Startup, model, trace, chat, UI, server |
 | `graceful/config.py` | 64 | Constants, LR schedule, keys helper (Phase 2) |
 | `graceful/flattery.py` | 57 | Sycophancy scoring, greeting detection (Phase 2) |
 | `graceful/snobline.py` | 169 | Trace-based LoRA/Anti-LoRA controller (Phase 2) |
 | `graceful/dual_adapter.py` | 39 | LoRA + Anti-LoRA nn.Module (Phase 2) |
-| `memory.py` | 1,041 | Corpus, history, identity model (already extracted) |
+| `memory.py` | 1,043 | Corpus, history, identity model (already extracted) |
 | `search_stack.py` | 732 | Web search pipeline (already extracted) |
 | `model_router.py` | 335 | Query routing heuristics (already extracted) |
 | `trace_analytics.py` | 407 | Cross-session trace analysis (already extracted) |
 | `context_budget.py` | 148 | Token budget tracking (already extracted) |
-| `search_sanitizer.py` | 593 | Search query sanitization (already extracted) |
+| `search_sanitizer.py` | 595 | Search query sanitization (already extracted) |
 | `ingest_concordance.py` | 197 | Corpus ingestion helper (already extracted) |
 
 ### Subsystems Inside app.py
@@ -51,6 +51,31 @@ extracted ad hoc. No test infrastructure beyond custom test harnesses.
 | HTML | 7922-7942 | Static HTML loader |
 | Test Injection | 7943-8122 | Test-mode-only endpoints |
 | Launch | 8123-8156 | Uvicorn startup |
+
+### Thread Safety (as of 2026-05-05)
+
+| Lock | Protects | Added |
+|------|----------|-------|
+| `_session_lock` | `_session_history`, `_active_session_ts` | original |
+| `_model_lock` | model forward pass, `_user_request_pending` | original |
+| `_pending_trace_lock` | `_pending_trace` | original |
+| `_pinned_context_lock` | `_pinned_context` list | fix pass |
+
+Key patterns:
+- Lock-and-snapshot: acquire lock, `list(data)`, release, iterate snapshot
+- `_user_request_pending` counter: incremented at API entry, decremented at
+  `_model_lock.acquire()` or via `finally` block for early-return commands
+- Session-scoped state (`_recent_response_vecs`, `_socratic_mode`, `_compress_mode`,
+  `ctrl.*`) cleared on `/api/new` and `/api/reset`
+
+### Security Boundaries
+
+| Location | Mechanism | Note |
+|----------|-----------|------|
+| `app.py` `/run` exec() | Restricted namespace (no `__builtins__`) | Local-only; no filesystem sandbox |
+| `memory.py` pickle.load | Trusted local files only | Files in `manifold_data/` |
+| `launch.py` subprocess | `shell=False` with list args | No shell injection |
+| `search_sanitizer.py` MD5 | `usedforsecurity=False` | Content dedup keys only |
 
 ## Proposed Module Structure
 
@@ -113,6 +138,11 @@ Module-level mutable state to wrap in classes:
 ## Testing Strategy
 
 - **Unit tests** (`tests/test_*.py`): import extracted modules directly
+  - `test_config.py` (13), `test_context_budget.py` (12), `test_flattery.py` (11),
+    `test_ingest_concordance.py` (6), `test_model_router.py` (16),
+    `test_personality.py` (39), `test_search_sanitizer.py` (18),
+    `test_snobline.py` (15), `test_trace_analytics.py` (6)
+  - Total: 136 passing, 3 deselected (require MLX hardware)
 - **Integration tests** (`tests/test_integration.py`): HTTP against running server
 - **Existing harnesses** (`test_smoke.py`, `test_full_ux.py`, etc.): kept as-is
-- All tests run via `make test`
+- All tests run via `python3 -m pytest tests/ -x -q`

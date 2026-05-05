@@ -168,6 +168,7 @@ This application is a deployment of the Coupled Manifold Safety Framework. The t
 - Hessian trace computation runs one turn behind (current turn's trace reflects the previous response)
 - Search APIs are optional and require manual configuration during setup
 - The app requires Apple Silicon — Intel Macs are not supported
+- `/run` executes Python in a restricted namespace (no `__builtins__`) but without a filesystem sandbox — code can access local files
 - This is a research deployment; expect rough edges
 
 ---

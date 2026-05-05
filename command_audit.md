@@ -1,4 +1,9 @@
-# Command Audit — 2026-04-18
+# Command Audit — 2026-04-18 (updated 2026-05-05)
+
+> **Note:** Line numbers in this audit are from the 2026-04-18 snapshot. The fix pass
+> (2026-05-05) shifted lines in app.py by ~30–50 lines due to added locks, logging,
+> and removed dead code. Command handlers and UI entries are unchanged — only line
+> offsets are stale.
 
 ## Surface Definitions
 

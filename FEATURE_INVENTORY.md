@@ -1,6 +1,10 @@
 # Feature Inventory
 
-Generated: 2026-04-17
+Generated: 2026-04-17 (line numbers updated through 2026-05-05 fix pass)
+
+> **Note:** Line numbers are approximate — the fix pass (2026-05-05, 20 commits)
+> shifted endpoints by ~30–50 lines due to added locks, logging, dead code removal,
+> and thread safety improvements. Endpoint paths and command names are unchanged.
 
 ---
 

@@ -1,4 +1,9 @@
-# Audit: Current Session State — 2026-04-18
+# Audit: Current Session State — 2026-04-18 (updated 2026-05-05)
+
+> **Note (2026-05-05):** The fix pass added `_session_lock` protection around all
+> `_session_history` reads (commit `1170f80`) and `_active_session_ts` writes in
+> `api_fork`/`api_reset` (commit `9b82d83`). The mismatches identified in this audit
+> (sections 3–4) are still present and tracked as future work.
 
 ## 1. Change Inventory (index.html, session-related, today)
 
