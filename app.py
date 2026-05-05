@@ -2201,6 +2201,7 @@ def speak(text: str, voice: str = "Samantha", rate: int = 200):
 # ═══════════════════════════════════════════════════
 
 _pinned_context: list = []   # user-pinned text blocks, injected every turn
+_pinned_context_lock = threading.Lock()
 
 
 # ═══════════════════════════════════════════════════
@@ -3136,14 +3137,17 @@ def chat(user_msg, history):
     if user_msg.lower().startswith("/pin "):
         pin_text = user_msg[5:].strip()
         if pin_text:
-            _pinned_context.append({"text": pin_text, "ts": time.time(), "turn": turn_count[0]})
-            if len(_pinned_context) > 50:
-                _pinned_context[:] = _pinned_context[-50:]
+            with _pinned_context_lock:
+                _pinned_context.append({"text": pin_text, "ts": time.time(), "turn": turn_count[0]})
+                if len(_pinned_context) > 50:
+                    _pinned_context[:] = _pinned_context[-50:]
             reply = f"**Pinned:** {pin_text}"
         else:
-            if _pinned_context:
+            with _pinned_context_lock:
+                _snap = list(_pinned_context[-10:])
+            if _snap:
                 lines = ["**Pinned messages:**\n"]
-                for p in _pinned_context[-10:]:
+                for p in _snap:
                     lines.append(f"• {p['text']}")
                 reply = "\n".join(lines)
             else:
@@ -4617,9 +4621,11 @@ plt.tight_layout()
     # Compose full context block
     context_parts = []
     # Pinned context always first — user-defined persistent blocks
-    if _pinned_context:
+    with _pinned_context_lock:
+        _pins_snap = list(_pinned_context)
+    if _pins_snap:
         pin_block = "[PINNED CONTEXT — always in scope for this session]\n"
-        pin_block += "\n---\n".join(p["text"] if isinstance(p, dict) else p for p in _pinned_context)
+        pin_block += "\n---\n".join(p["text"] if isinstance(p, dict) else p for p in _pins_snap)
         pin_block += "\n[END PINNED]"
         context_parts.append(pin_block)
     if mem_context:    context_parts.append(mem_context)
@@ -4630,7 +4636,7 @@ plt.tight_layout()
     _is_factual = any(w in user_msg.lower() for w in
                       ["what is", "who is", "when did", "how many", "where is",
                        "which", "what year", "what date", "who was", "how much"])
-    if _is_factual and not searched and not mem_context and not _pinned_context:
+    if _is_factual and not searched and not mem_context and not _pins_snap:
         context_parts.append(
             "[NOTE: No corpus or search results available for this question. "
             "If you are not confident in the answer, say so clearly. "
@@ -7284,24 +7290,30 @@ async def api_pin(request: Request):
     text = (data.get("text") or "").strip()
     if not text:
         return JSONResponse({"error": "empty"}, 400)
-    if len(_pinned_context) >= 5:
-        return JSONResponse({"error": "max 5 pins"}, 400)
-    _pinned_context.append(text[:1000])
-    print(f"  📌 Pinned context ({len(_pinned_context)}/5): {text[:60]}...")
-    return JSONResponse({"ok": True, "pins": len(_pinned_context)})
+    with _pinned_context_lock:
+        if len(_pinned_context) >= 5:
+            return JSONResponse({"error": "max 5 pins"}, 400)
+        _pinned_context.append(text[:1000])
+        _n_pins = len(_pinned_context)
+    print(f"  📌 Pinned context ({_n_pins}/5): {text[:60]}...")
+    return JSONResponse({"ok": True, "pins": _n_pins})
 
 @api.post("/api/unpin")
 async def api_unpin(request: Request):
     data = await request.json()
     idx = data.get("index", -1)
-    if 0 <= idx < len(_pinned_context):
-        removed = _pinned_context.pop(idx)
-        print(f"  📌 Unpinned: {removed[:60]}")
-    return JSONResponse({"ok": True, "pins": len(_pinned_context)})
+    with _pinned_context_lock:
+        if 0 <= idx < len(_pinned_context):
+            removed = _pinned_context.pop(idx)
+            print(f"  📌 Unpinned: {str(removed)[:60]}")
+        _n_pins = len(_pinned_context)
+    return JSONResponse({"ok": True, "pins": _n_pins})
 
 @api.get("/api/pins")
 async def api_pins():
-    return JSONResponse({"pins": _pinned_context})
+    with _pinned_context_lock:
+        _snap = list(_pinned_context)
+    return JSONResponse({"pins": _snap})
 
 
 # ── Reaction logging ──────────────────────────────────────────────────────────
