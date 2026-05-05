@@ -699,7 +699,10 @@ def compute_trace_for_model(target_model, tokens_np):
 # SEARCH STACK
 # ═══════════════════════════════════════════════════
 
-from search_stack import search as _search_stack, should_search, format_results
+from search_stack import search as _search_stack, should_search, format_results, search_by_intent
+from intent_router import IntentRouter
+
+_intent_router = IntentRouter()  # fast-path only (no generate_fn)
 
 def search_web(query):
     return _search_stack(query)
@@ -4554,22 +4557,27 @@ plt.tight_layout()
     _last_web_query: str = ""
     if _skip_search_this_turn[0]:
         _skip_search_this_turn[0] = False
-    elif should_search(user_msg):
-        results = search_web(search_query)
-        if results:
-            searched = True
-            web_context = format_results(results)
-            # Collect source (url, title) pairs for inline citation
-            _search_sources = [
-                (r.get("url", ""), r.get("title", ""))
-                for r in results[:3] if r.get("url") or r.get("title")
-            ]
-            # Capture the actual query used by the search stack
-            try:
-                from search_stack import get_last_search_query as _glsq
-                _last_web_query = _glsq()
-            except Exception:
-                _last_web_query = search_query
+        _intent_decision = _intent_router.classify(user_msg, skip=True)
+    else:
+        _intent_decision = _intent_router.classify(
+            user_msg, geometric_mode=ctrl.mode)
+        if _intent_decision.should_search:
+            results = search_by_intent(search_query, _intent_decision.search_sources)
+            if not results:
+                # Fallback: full search stack if intent-routed sources returned nothing
+                results = search_web(search_query)
+            if results:
+                searched = True
+                web_context = format_results(results)
+                _search_sources = [
+                    (r.get("url", ""), r.get("title", ""))
+                    for r in results[:3] if r.get("url") or r.get("title")
+                ]
+                try:
+                    from search_stack import get_last_search_query as _glsq
+                    _last_web_query = _glsq()
+                except Exception:
+                    _last_web_query = search_query
 
     # Memory context — skip for simple greetings to avoid context flooding
     _is_greeting = (len(user_msg.split()) <= 5 and not any(

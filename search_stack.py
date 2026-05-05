@@ -8,6 +8,10 @@ Smart query reformulation when direct search fails.
 import os, json, time
 import urllib.parse
 
+# All HTTP sources must send a User-Agent identifying the application.
+# Many APIs (Wikipedia, GitHub, etc.) now require this and return 403 without it.
+_USER_AGENT = "Graceful/1.0 (https://github.com/ianjpdepaul-rgb/Coupled-Manifold; local AI assistant) httpx"
+
 # Safety layer — graceful fallback if module not present
 try:
     from search_sanitizer import (
@@ -52,7 +56,8 @@ def _brave(query: str, n: int = 5) -> list[dict]:
         import httpx
         r = httpx.get(
             "https://api.search.brave.com/res/v1/web/search",
-            headers={"Accept": "application/json", "X-Subscription-Token": key},
+            headers={"Accept": "application/json", "X-Subscription-Token": key,
+                     "User-Agent": _USER_AGENT},
             params={"q": query, "count": n}, timeout=6.0
         )
         return [{"title": x.get("title",""), "body": x.get("description",""),
@@ -69,6 +74,7 @@ def _youtube(query: str, n: int = 3) -> list[dict]:
         import httpx
         r = httpx.get(
             "https://www.googleapis.com/youtube/v3/search",
+            headers={"User-Agent": _USER_AGENT},
             params={"key": key, "q": query, "part": "snippet",
                     "type": "video", "maxResults": n}, timeout=6.0
         )
@@ -88,6 +94,7 @@ def _google_custom(query: str, n: int = 5) -> list[dict]:
         import httpx
         r = httpx.get(
             "https://www.googleapis.com/customsearch/v1",
+            headers={"User-Agent": _USER_AGENT},
             params={"key": key, "cx": cx, "q": query, "num": n}, timeout=6.0
         )
         return [{"title": i.get("title",""), "body": i.get("snippet",""),
@@ -102,6 +109,7 @@ def _openalex(query: str, n: int = 3) -> list[dict]:
         import httpx
         r = httpx.get(
             "https://api.openalex.org/works",
+            headers={"User-Agent": _USER_AGENT},
             params={"search": query, "per-page": n,
                     "mailto": KEYS.get("unpaywall_email","research@coupled.ai")},
             timeout=6.0
@@ -130,6 +138,7 @@ def _arxiv(query: str, n: int = 3) -> list[dict]:
         import httpx, xml.etree.ElementTree as ET
         r = httpx.get(
             "https://export.arxiv.org/api/query",
+            headers={"User-Agent": _USER_AGENT},
             params={"search_query": f"all:{query}", "start": 0,
                     "max_results": n, "sortBy": "relevance"}, timeout=6.0
         )
@@ -152,6 +161,7 @@ def _semantic_scholar(query: str, n: int = 3) -> list[dict]:
         import httpx
         r = httpx.get(
             "https://api.semanticscholar.org/graph/v1/paper/search",
+            headers={"User-Agent": _USER_AGENT},
             params={"query": query, "limit": n,
                     "fields": "title,abstract,year,citationCount,externalIds"},
             timeout=6.0
@@ -180,6 +190,7 @@ def _unpaywall(doi: str) -> str:
         import httpx
         r = httpx.get(
             f"https://api.unpaywall.org/v2/{doi}",
+            headers={"User-Agent": _USER_AGENT},
             params={"email": email}, timeout=5.0
         )
         data = r.json()
@@ -210,6 +221,7 @@ def _hackernews(query: str, n: int = 3) -> list[dict]:
         import httpx
         r = httpx.get(
             "https://hn.algolia.com/api/v1/search",
+            headers={"User-Agent": _USER_AGENT},
             params={"query": query, "tags": "story", "hitsPerPage": n},
             timeout=5.0
         )
@@ -236,6 +248,7 @@ def _stack_exchange(query: str, n: int = 3, site: str = "stackoverflow") -> list
         import httpx
         r = httpx.get(
             "https://api.stackexchange.com/2.3/search/advanced",
+            headers={"User-Agent": _USER_AGENT},
             params={
                 "q": query, "site": site, "pagesize": n,
                 "order": "desc", "sort": "relevance",
@@ -268,6 +281,7 @@ def _pubmed(query: str, n: int = 3) -> list[dict]:
         # Step 1: search for IDs
         r = httpx.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            headers={"User-Agent": _USER_AGENT},
             params={"db": "pubmed", "term": query, "retmax": n, "retmode": "json"},
             timeout=6.0
         )
@@ -277,6 +291,7 @@ def _pubmed(query: str, n: int = 3) -> list[dict]:
         # Step 2: fetch summaries
         r2 = httpx.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+            headers={"User-Agent": _USER_AGENT},
             params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
             timeout=6.0
         )
@@ -305,7 +320,7 @@ def _core(query: str, n: int = 3) -> list[dict]:
         r = httpx.get(
             "https://api.core.ac.uk/v3/search/works",
             params={"q": query, "limit": n},
-            headers={"Authorization": ""},  # no key needed for basic
+            headers={"Authorization": "", "User-Agent": _USER_AGENT},
             timeout=6.0
         )
         out = []
@@ -333,7 +348,7 @@ def _github(query: str, n: int = 3) -> list[dict]:
             "https://api.github.com/search/repositories",
             params={"q": query, "sort": "stars", "order": "desc", "per_page": n},
             headers={"Accept": "application/vnd.github.v3+json",
-                     "User-Agent": "graceful-app-search"},
+                     "User-Agent": _USER_AGENT},
             timeout=6.0
         )
         out = []
@@ -356,6 +371,7 @@ def _crossref(query: str, n: int = 3) -> list[dict]:
         email = KEYS.get("unpaywall_email", "research@coupled.ai")
         r = httpx.get(
             "https://api.crossref.org/works",
+            headers={"User-Agent": _USER_AGENT},
             params={"query": query, "rows": n,
                     "mailto": email,
                     "select": "title,author,published,DOI,abstract,container-title"},
@@ -389,6 +405,7 @@ def _internet_archive(query: str, n: int = 3) -> list[dict]:
         import httpx
         r = httpx.get(
             "https://archive.org/advancedsearch.php",
+            headers={"User-Agent": _USER_AGENT},
             params={
                 "q": query, "output": "json", "rows": n,
                 "fl[]": ["identifier","title","description","date"],
@@ -421,7 +438,7 @@ def _fetch_page_content(url: str, max_chars: int = 2000) -> str:
         import httpx
         from html.parser import HTMLParser
         r = httpx.get(url, timeout=8.0, follow_redirects=True,
-                      headers={"User-Agent": "Mozilla/5.0 (compatible; research-bot)"})
+                      headers={"User-Agent": _USER_AGENT})
         if r.status_code != 200:
             return ""
         class _P(HTMLParser):
@@ -447,17 +464,18 @@ def _wikipedia(query: str, n: int = 2) -> list[dict]:
     try:
         import httpx, urllib.parse
         search_url = "https://en.wikipedia.org/w/api.php"
+        _headers = {"User-Agent": _USER_AGENT}
         r = httpx.get(search_url, params={
             "action": "query", "list": "search", "srsearch": query,
             "srlimit": n, "format": "json", "utf8": 1
-        }, timeout=5.0)
+        }, headers=_headers, timeout=5.0)
         titles = [s["title"] for s in r.json().get("query",{}).get("search",[])]
         out = []
         for title in titles:
             r2 = httpx.get(search_url, params={
                 "action": "query", "prop": "extracts", "exintro": True,
                 "explaintext": True, "titles": title, "format": "json"
-            }, timeout=5.0)
+            }, headers=_headers, timeout=5.0)
             pages = r2.json().get("query",{}).get("pages",{})
             for page in pages.values():
                 extract = (page.get("extract") or "")[:400]
@@ -679,6 +697,91 @@ def search(query: str, force: bool = False) -> list[dict]:
         deduped = sanitize_results(deduped)
         _search_limiter.record_result(len(deduped))
         _search_cache.put(query, deduped[:8])
+
+    return deduped[:8]
+
+
+# ── Intent-based source dispatch ────────────────────────────────────────────
+
+_SOURCE_FN = {
+    "brave":            _brave,
+    "wikipedia":        _wikipedia,
+    "ddg":              _duckduckgo,
+    "openalex":         _openalex,
+    "arxiv":            _arxiv,
+    "semantic_scholar":  _semantic_scholar,
+    "crossref":         _crossref,
+    "pubmed":           _pubmed,
+    "hackernews":       _hackernews,
+    "brave_dated":      lambda q, n=5: _brave(
+        f"{q} {__import__('datetime').datetime.now().strftime('%B %Y')}", n),
+}
+
+
+def search_by_intent(query: str, sources: list[str] | None) -> list[dict]:
+    """Search only the sources specified by the intent router.
+
+    If sources is None, returns [] (caller should not have called).
+    Applies the same dedup/sanitize/cache pipeline as search().
+    """
+    if not sources:
+        return []
+
+    # Refresh keys
+    global KEYS
+    KEYS = load_keys()
+    _last_search_query[0] = query
+
+    # Cache check
+    cache_key = f"intent:{','.join(sorted(sources))}:{query}"
+    if _SANITIZER_AVAILABLE:
+        cached = _search_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        allowed, reason = _search_limiter.allow()
+        if not allowed:
+            print(f"  🛡 Search blocked: {reason}")
+            return []
+
+    results = []
+    for src in sources:
+        fn = _SOURCE_FN.get(src)
+        if fn:
+            results += fn(query)
+
+    # Deduplicate
+    seen = set()
+    deduped = []
+    for r in results:
+        key = (r.get("title", ""), r.get("url", r.get("body", "")[:80]))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+
+    # Enrich thin results
+    for _r in deduped[:3]:
+        if _r.get("url") and len(_r.get("body", "")) < 100:
+            fetched = _fetch_page_content(_r["url"], 1500)
+            if fetched:
+                _r["body"] = fetched[:400]
+
+    # Sort by quality
+    if _SANITIZER_AVAILABLE:
+        import re as _re
+        _cur_year = str(__import__('datetime').datetime.now().year)
+        _prev_year = str(__import__('datetime').datetime.now().year - 1)
+
+        def _quality_score(r, q):
+            t = trust_score(r) * 0.6 + relevance_score(q, r) * 0.4
+            text = r.get("title", "") + r.get("body", "")
+            if _cur_year in text or _prev_year in text:
+                t += 0.08
+            return t
+
+        deduped.sort(key=lambda r: _quality_score(r, query), reverse=True)
+        deduped = sanitize_results(deduped)
+        _search_limiter.record_result(len(deduped))
+        _search_cache.put(cache_key, deduped[:8])
 
     return deduped[:8]
 
