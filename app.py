@@ -1644,7 +1644,6 @@ if _boot_config.get("assistant_name", "").strip():
 _learn_step_count = [0]    # cumulative learn steps — used for LR decay
 _bootstrap_steps  = [0]    # bootstrap learn steps with cold adapters (Gate B bypassed)
 _BOOTSTRAP_LIMIT  = 10     # max bootstrap steps before requiring real trace signal
-_recent_response_vecs = collections.deque(maxlen=5)  # diversity gate for learning
 trace_history_live = []   # for live chart
 model_mode    = ["mixed"]  # current ModelPair mode
 _pending_trace      = [None]  # background-computed trace, consumed next turn
