@@ -6906,7 +6906,9 @@ async def api_export_json():
     # Build a turn-number → log entry lookup
     log_by_turn = {r.get("turn", 0): r for r in session_log}
     asst_idx = 0
-    for i, msg in enumerate(list(_session_history)):
+    with _session_lock:
+        _hist_snap = list(_session_history)
+    for i, msg in enumerate(_hist_snap):
         entry = {"index": i, "role": msg.get("role"), "content": re.sub(r'<!--MED-->[\s\S]*', '', msg.get("content", "")).strip()}
         if msg.get("role") == "assistant":
             asst_idx += 1
