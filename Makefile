@@ -1,4 +1,4 @@
-.PHONY: test test-quick test-full test-manifold test-harness test-harness-managed smoke ux start start-test unit integration lint format clean
+.PHONY: test test-quick test-full test-manifold test-harness test-harness-managed smoke ux start start-test unit integration lint format clean agent-test agent-baseline agent-regression
 
 # ── pytest-based targets ────────────────────────────────
 
@@ -41,6 +41,27 @@ test-harness:
 # Trace replay harness with managed server (starts/stops automatically)
 test-harness-managed:
 	python3 trace_replay_harness.py --managed --verbose
+
+# ── Synthetic user agent ───────────────────────────────
+
+# Run all agent personas (requires running server)
+agent-test:
+	python3 -m tests.chat_agent.runner --all
+
+# Run all personas and save as baseline
+agent-baseline:
+	python3 -m tests.chat_agent.runner --all --save-baseline
+
+# Run all personas and compare against saved baseline
+agent-regression:
+	@LATEST=$$(ls -t tests/chat_agent/logs/run_*.jsonl 2>/dev/null | head -1); \
+	if [ -z "$$LATEST" ]; then \
+		echo "No run logs found. Run 'make agent-test' first."; exit 1; \
+	fi; \
+	if [ ! -f tests/chat_agent/baselines/baseline.jsonl ]; then \
+		echo "No baseline found. Run 'make agent-baseline' first."; exit 1; \
+	fi; \
+	python3 -m tests.chat_agent.runner --compare-baseline tests/chat_agent/baselines/baseline.jsonl "$$LATEST"
 
 # ── Dev utilities ───────────────────────────────────────
 
