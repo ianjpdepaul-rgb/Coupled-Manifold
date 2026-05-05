@@ -2941,10 +2941,6 @@ def chat(user_msg, history):
             reply = "Nothing to summarize yet — start a conversation first."
         else:
             turns = session_log[-20:]  # last 20 turns
-            lines = []
-            for t in turns:
-                lines.append(f"User: {t.get('user','')[:120]}\nAssistant: {t.get('response','')[:120]}")
-            summary_input = "\n\n".join(lines)
             # Build a simple extractive summary
             topics = set()
             for t in turns:
