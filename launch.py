@@ -497,13 +497,13 @@ class App(tk.Tk):
         req_file = os.path.join(DIR, "requirements.txt")
         steps = [
             ("Creating virtual environment…",
-             f"'{sys.executable}' -m venv '{VENV}'"),
+             [sys.executable, "-m", "venv", VENV]),
             ("Bootstrapping pip…",
-             f"'{PY}' -m ensurepip --upgrade"),
+             [PY, "-m", "ensurepip", "--upgrade"]),
             ("Upgrading pip…",
-             f"'{PY}' -m pip install --upgrade pip -q"),
+             [PY, "-m", "pip", "install", "--upgrade", "pip", "-q"]),
             ("Installing dependencies…",
-             f"'{PY}' -m pip install -r '{req_file}' -q"),
+             [PY, "-m", "pip", "install", "-r", req_file, "-q"]),
         ]
 
         def _run():
@@ -512,7 +512,7 @@ class App(tk.Tk):
                 self._iwrite(f"\n▸  {msg}\n")
                 self.after(0, lambda m=msg: self._install_lbl.config(text=m))
                 proc = subprocess.Popen(
-                    cmd, shell=True,
+                    cmd,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1, cwd=DIR,
                 )
