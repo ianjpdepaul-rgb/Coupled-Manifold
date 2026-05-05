@@ -4024,9 +4024,10 @@ document.addEventListener("DOMContentLoaded",function(){
       return;
     }
     var data=await fetch("/api/knowledge_graph").then(function(r){return r.json();}).catch(function(){return null;});
-    if(!data||!data.nodes){
+    if(!data||!data.nodes||!data.nodes.length){
       var svgEl=document.getElementById("kg-svg");
       if(svgEl){
+        svgEl.innerHTML="";
         var t=document.createElementNS("http://www.w3.org/2000/svg","text");
         t.setAttribute("x","50%");t.setAttribute("y","50%");t.setAttribute("text-anchor","middle");
         t.setAttribute("fill","var(--text4)");t.setAttribute("font-size","12");
