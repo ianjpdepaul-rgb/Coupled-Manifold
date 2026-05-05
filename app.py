@@ -5242,8 +5242,8 @@ plt.tight_layout()
                     with _pending_trace_lock:
                         _pending_trace[0]      = _tr
                         _pending_trace_turn[0] = turn_count[0]
-                except Exception:
-                    pass
+                except Exception as _bg_err:
+                    print(f"[BG_TRACE] error: {_bg_err}", file=sys.stderr, flush=True)
                 finally:
                     _model_lock.release()
             threading.Thread(target=_bg_trace, daemon=True).start()
