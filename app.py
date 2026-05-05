@@ -1584,7 +1584,8 @@ _LOCKED_BASE = (
     "Never state uncertainty confidently. Never perform certainty you don't have."
 )
 system_prompt = [_DEFAULT_SYSTEM_PROMPT]    # active system prompt, prepended to all sessions
-_user_name    = [""]    # optional — injected into system prompt as "You're talking to <name>."
+_user_name      = [""]         # optional — injected into system prompt as "You're talking to <name>."
+_assistant_name = ["Graceful"] # configurable assistant name, shown in UI header
 online_learning = [True]   # user toggle: online LoRA updates after good turns
 
 think_mode    = [False] # deep reasoning mode: model shows CoT before answering
@@ -1607,11 +1608,12 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     pass  # first run or corrupt file — use defaults
 
-# Also load user_name from config.json if not already set via user_settings
-if not _user_name[0]:
-    _boot_config = _load_user_config()
-    if _boot_config.get("user_name", "").strip():
-        _user_name[0] = _boot_config["user_name"].strip()
+# Also load user_name and assistant_name from config.json
+_boot_config = _load_user_config()
+if not _user_name[0] and _boot_config.get("user_name", "").strip():
+    _user_name[0] = _boot_config["user_name"].strip()
+if _boot_config.get("assistant_name", "").strip():
+    _assistant_name[0] = _boot_config["assistant_name"].strip()
 _learn_step_count = [0]    # cumulative learn steps — used for LR decay
 _bootstrap_steps  = [0]    # bootstrap learn steps with cold adapters (Gate B bypassed)
 _BOOTSTRAP_LIMIT  = 10     # max bootstrap steps before requiring real trace signal
@@ -2741,18 +2743,27 @@ def chat(user_msg, history):
         if not args:
             # Show current config
             _pn = _user_name[0] or "(not set)"
+            _an = _assistant_name[0] or "Graceful"
             _pp = config.get("personality_prompt", "(default)")
             _preview = system_prompt[0][:200] + "…" if len(system_prompt[0]) > 200 else system_prompt[0]
             reply = (
                 f"**Personality Configuration**\n\n"
-                f"**Name:** {_pn}\n"
+                f"**Assistant name:** {_an}\n"
+                f"**Your name:** {_pn}\n"
                 f"**Prompt file:** {_pp}\n\n"
                 f"**Active prompt preview:**\n> {_preview}\n\n"
                 f"**Usage:**\n"
                 f"- `/persona name Alex` — set your name\n"
+                f"- `/persona assistant Sage` — rename your assistant\n"
                 f"- `/persona reset` — reload from personality files\n"
                 f"- `/persona prompt <text>` — set a custom system prompt"
             )
+        elif args.lower().startswith("assistant "):
+            new_name = args[10:].strip()
+            _assistant_name[0] = new_name
+            config["assistant_name"] = new_name
+            _save_user_config(config)
+            reply = f"**Assistant renamed to:** {new_name}"
         elif args.lower().startswith("name "):
             new_name = args[5:].strip()
             _user_name[0] = new_name
@@ -4582,9 +4593,10 @@ plt.tight_layout()
 
     # ── Inject system prompt (user-defined + think mode + tone + tool dispatch) ──
     _sys_content = system_prompt[0].strip()
-    # Substitute {user_name} placeholder if present in personality prompt
+    # Substitute placeholders in personality prompt
     _un = _user_name[0] or "the user"
-    _sys_content = _sys_content.replace("{user_name}", _un)
+    _an = _assistant_name[0] or "Graceful"
+    _sys_content = _sys_content.replace("{user_name}", _un).replace("{assistant_name}", _an)
     if _user_name[0]:
         _sys_content = f"You're talking to {_user_name[0]}.\n\n" + _sys_content
     # Locked base always appended — not overridable by user settings
@@ -6044,6 +6056,7 @@ async def api_init():
         "temperature":      temp_override[0],
         "system_prompt":    system_prompt[0],
         "user_name":        _user_name[0],
+        "assistant_name":   _assistant_name[0],
         "active_sid":       active_sid,
         "vision_tokens":    _VISION_TOKENS,
         "session_restored": bool(_today_sid and _session_history),
@@ -6824,6 +6837,8 @@ async def api_settings(request: Request):
         except (ValueError, TypeError): pass
     if "user_name" in data:
         _user_name[0] = (data["user_name"] or "").strip()
+    if "assistant_name" in data:
+        _assistant_name[0] = (data["assistant_name"] or "Graceful").strip()
     if "system_prompt" in data:
         _sp = (data["system_prompt"] or "").strip()
         system_prompt[0] = _sp if _sp else _DEFAULT_SYSTEM_PROMPT
@@ -6844,7 +6859,7 @@ async def api_settings(request: Request):
     if "trace_sync_mode" in data:
         TRACE_SYNC_MODE[0] = bool(data["trace_sync_mode"])
     # Persist settings
-    if "trace_sync_mode" in data or "online_learning" in data or "user_name" in data or "system_prompt" in data or "temp" in data or "temperature" in data:
+    if "trace_sync_mode" in data or "online_learning" in data or "user_name" in data or "assistant_name" in data or "system_prompt" in data or "temp" in data or "temperature" in data:
         try:
             with open(_SETTINGS_PATH, "w") as _sf:
                 json.dump({"user_name": _user_name[0],
@@ -6854,6 +6869,15 @@ async def api_settings(request: Request):
                            "trace_sync_mode": TRACE_SYNC_MODE[0]}, _sf)
         except Exception:
             pass
+        # Also persist assistant_name to config.json
+        if "assistant_name" in data or "user_name" in data:
+            try:
+                config = _load_user_config()
+                config["assistant_name"] = _assistant_name[0]
+                config["user_name"] = _user_name[0]
+                _save_user_config(config)
+            except Exception:
+                pass
     return JSONResponse({"ok": True})
 
 @api.post("/api/model_mode")

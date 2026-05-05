@@ -722,7 +722,7 @@ input[type=range]{accent-color:var(--primary)!important;}
     </div>
     <div class="s-sec">
       <div class="s-lbl">Model</div>
-      <div style="font-size:.82em;color:var(--text2);margin-top:4px;font-family:var(--mono)">Graceful-I1 &nbsp;·&nbsp; Gemma 4 E4B 4-bit</div>
+      <div id="sidebar-model-label" style="font-size:.82em;color:var(--text2);margin-top:4px;font-family:var(--mono)">Graceful &nbsp;·&nbsp; Gemma 4 E4B 4-bit</div>
     </div>
     <div class="s-sec">
       <div class="s-lbl">Think Budget <span id="think-budget-disp" style="font-size:.7em;color:var(--text3);font-family:var(--mono);margin-left:6px"></span></div>
@@ -2108,6 +2108,12 @@ async function init(){
       activeSid=_nd.active_sid||null;if(_nd.sessions)_allSessions=_nd.sessions;}catch(e){}
     }
     renderSessions(_allSessions);
+    // Set assistant name in header from config
+    var _aName=d.assistant_name||"Graceful";
+    var _mbEl=document.getElementById("model-badge");
+    if(_mbEl)_mbEl.textContent=_aName+" \u00b7 Gemma 4 E4B";
+    var _sml=document.getElementById("sidebar-model-label");
+    if(_sml)_sml.textContent=_aName+" \u00b7 Gemma 4 E4B 4-bit";
     thinkOn=d.think_mode||false;
     document.getElementById("think-btn").classList.toggle("on",thinkOn);
     if(thinkOn) _statusStrip.set('think','\uD83E\uDDE0 think','sp-purple',{title:'Deep reasoning active'});

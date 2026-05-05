@@ -15,7 +15,14 @@ def persona_env(tmp_path):
 
     # Write a shipped default at the "repo root"
     default_shipped = tmp_path / "default_system_prompt.txt"
-    default_shipped.write_text("You are Graceful, a neutral default assistant.")
+    default_shipped.write_text("You are {assistant_name}, a neutral default assistant.")
+
+    # Write starter prompts
+    starters = tmp_path / "starter_prompts"
+    starters.mkdir()
+    (starters / "default.txt").write_text("You are {assistant_name}, neutral and direct.")
+    (starters / "tutor.txt").write_text("You are {assistant_name}, a patient tutor.")
+    (starters / "critic.txt").write_text("You are {assistant_name}, a rigorous critic.")
 
     return {
         "root": tmp_path,
@@ -23,6 +30,7 @@ def persona_env(tmp_path):
         "personalities": personalities,
         "config_path": data_dir / "config.json",
         "default_shipped": default_shipped,
+        "starters": starters,
     }
 
 
@@ -63,9 +71,19 @@ def _load_prompt(root, data_dir, config_path, personalities_dir):
     return "fallback"
 
 
+def _substitute(prompt, user_name="", assistant_name="Graceful"):
+    """Simulate app.py's placeholder substitution."""
+    un = user_name or "the user"
+    an = assistant_name or "Graceful"
+    return prompt.replace("{user_name}", un).replace("{assistant_name}", an)
+
+
+# ═══════════════════════════════════════════════════
+# Layer 1 tests
+# ═══════════════════════════════════════════════════
+
 class TestDefaultPromptLoads:
     def test_default_prompt_loads_when_no_config(self, persona_env):
-        """No config.json, no personality files — falls back to shipped default."""
         prompt = _load_prompt(
             persona_env["root"], persona_env["data_dir"],
             persona_env["config_path"], persona_env["personalities"],
@@ -73,7 +91,6 @@ class TestDefaultPromptLoads:
         assert "neutral default" in prompt
 
     def test_default_personality_file_preferred_over_shipped(self, persona_env):
-        """A default_system_prompt.txt in personalities/ takes precedence over the shipped one."""
         (persona_env["personalities"] / "default_system_prompt.txt").write_text(
             "Custom default personality."
         )
@@ -86,7 +103,6 @@ class TestDefaultPromptLoads:
 
 class TestUserPromptLoads:
     def test_user_prompt_loads_when_configured(self, persona_env):
-        """config.json with user_name → loads matching personality file."""
         persona_env["config_path"].write_text(json.dumps({"user_name": "Alex"}))
         (persona_env["personalities"] / "alex_system_prompt.txt").write_text(
             "You are talking to Alex. Be direct."
@@ -98,7 +114,6 @@ class TestUserPromptLoads:
         assert "Alex" in prompt
 
     def test_missing_personality_file_falls_back(self, persona_env):
-        """config.json points to a user, but no file exists — falls back to shipped default."""
         persona_env["config_path"].write_text(json.dumps({"user_name": "Nobody"}))
         prompt = _load_prompt(
             persona_env["root"], persona_env["data_dir"],
@@ -107,33 +122,60 @@ class TestUserPromptLoads:
         assert "neutral default" in prompt
 
 
-class TestUserNameSubstitution:
-    def test_user_name_placeholder_replaced(self, persona_env):
-        """System prompt with {user_name} placeholder gets substituted."""
-        (persona_env["personalities"] / "default_system_prompt.txt").write_text(
-            "You are talking to {user_name}. Be helpful."
-        )
-        prompt = _load_prompt(
-            persona_env["root"], persona_env["data_dir"],
-            persona_env["config_path"], persona_env["personalities"],
-        )
-        # The _load_prompt function returns raw text; substitution happens in app.py
-        assert "{user_name}" in prompt
-        # Simulate app.py's substitution
-        substituted = prompt.replace("{user_name}", "Alex")
-        assert "Alex" in substituted
-        assert "{user_name}" not in substituted
+class TestNameSubstitution:
+    def test_user_name_placeholder_replaced(self):
+        result = _substitute("Hello {user_name}.", user_name="Alex")
+        assert result == "Hello Alex."
 
     def test_no_name_uses_the_user(self):
-        """When no user_name is set, placeholder becomes 'the user'."""
-        prompt = "You are talking to {user_name}."
-        result = prompt.replace("{user_name}", "the user")
-        assert result == "You are talking to the user."
+        result = _substitute("Hello {user_name}.")
+        assert result == "Hello the user."
+
+    def test_assistant_name_placeholder_replaced(self):
+        result = _substitute("You are {assistant_name}.", assistant_name="Sage")
+        assert result == "You are Sage."
+
+    def test_assistant_name_default_graceful(self):
+        result = _substitute("You are {assistant_name}.")
+        assert result == "You are Graceful."
+
+    def test_both_placeholders(self):
+        result = _substitute(
+            "{assistant_name} is talking to {user_name}.",
+            user_name="Alex", assistant_name="Sage",
+        )
+        assert result == "Sage is talking to Alex."
+
+
+class TestAssistantNamePersists:
+    def test_assistant_name_in_config(self, persona_env):
+        persona_env["config_path"].write_text(json.dumps({
+            "assistant_name": "Sage",
+            "user_name": "Alex",
+        }))
+        config = json.loads(persona_env["config_path"].read_text())
+        assert config["assistant_name"] == "Sage"
+
+
+class TestStarterPrompts:
+    def test_starter_files_exist(self, persona_env):
+        for name in ("default", "tutor", "critic"):
+            assert (persona_env["starters"] / f"{name}.txt").is_file()
+
+    def test_starters_contain_assistant_placeholder(self, persona_env):
+        for name in ("default", "tutor", "critic"):
+            text = (persona_env["starters"] / f"{name}.txt").read_text()
+            assert "{assistant_name}" in text
+
+    def test_starter_substitution(self, persona_env):
+        text = (persona_env["starters"] / "tutor.txt").read_text()
+        result = _substitute(text, assistant_name="Mentor")
+        assert "Mentor" in result
+        assert "{assistant_name}" not in result
 
 
 class TestExplicitPromptPath:
     def test_explicit_personality_prompt_path(self, persona_env):
-        """config.json with personality_prompt path → loads that file."""
         custom = persona_env["personalities"] / "custom.txt"
         custom.write_text("I am a custom personality.")
         persona_env["config_path"].write_text(json.dumps({

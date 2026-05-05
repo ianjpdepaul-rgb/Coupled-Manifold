@@ -720,59 +720,95 @@ class App(tk.Tk):
         threading.Thread(target=_run, daemon=True).start()
 
     # ── Step 3: Persona ──────────────────────────────────────────────────
+    def _load_starters(self):
+        """Load starter prompt files from starter_prompts/ directory."""
+        starters_dir = os.path.join(DIR, "starter_prompts")
+        starters = []
+        labels = {
+            "default": "Default — neutral, direct, technically aware",
+            "tutor":   "Tutor — explains step by step, asks clarifying questions",
+            "critic":  "Critic — pushes back, finds weaknesses, doesn't flatter",
+        }
+        for key in ("default", "tutor", "critic"):
+            path = os.path.join(starters_dir, f"{key}.txt")
+            if os.path.isfile(path):
+                try:
+                    text = open(path).read().strip()
+                    starters.append((key, labels.get(key, key), text))
+                except Exception:
+                    pass
+        return starters
+
     def _step_persona(self):
         tk.Label(self._area, text="Make it yours",
                  font=("SF Pro Display", 15, "bold"), bg=BG, fg=FG).pack(anchor=tk.W)
         tk.Label(self._area,
-                 text="You can change any of this later with /persona in the chat.",
+                 text="You can change any of this later in Settings or with /persona in the chat.",
                  font=("SF Pro Display", 11), bg=BG, fg=FG2,
-                 wraplength=640, justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 14))
+                 wraplength=640, justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 10))
 
-        # Name field
-        name_row = tk.Frame(self._area, bg=BG)
-        name_row.pack(fill=tk.X, pady=4)
-        tk.Label(name_row, text="What should Graceful call you?",
+        # Assistant name
+        arow = tk.Frame(self._area, bg=BG)
+        arow.pack(fill=tk.X, pady=4)
+        tk.Label(arow, text="Name your assistant",
                  font=("SF Pro Display", 11, "bold"),
                  bg=BG, fg=FG, anchor=tk.W).pack(side=tk.LEFT)
-        self._persona_name = tk.StringVar()
-        tk.Entry(name_row, textvariable=self._persona_name, font=MONO,
+        self._assistant_name = tk.StringVar(value="Graceful")
+        tk.Entry(arow, textvariable=self._assistant_name, font=MONO,
                  bg=BG3, fg=FG, insertbackground=GREEN,
                  relief=tk.FLAT, bd=6, width=20).pack(side=tk.LEFT, padx=(10, 0))
 
-        tk.Frame(self._area, bg=BG3, height=1).pack(fill=tk.X, pady=14)
+        # User name
+        nrow = tk.Frame(self._area, bg=BG)
+        nrow.pack(fill=tk.X, pady=4)
+        tk.Label(nrow, text="What should it call you?",
+                 font=("SF Pro Display", 11, "bold"),
+                 bg=BG, fg=FG, anchor=tk.W).pack(side=tk.LEFT)
+        self._persona_name = tk.StringVar()
+        tk.Entry(nrow, textvariable=self._persona_name, font=MONO,
+                 bg=BG3, fg=FG, insertbackground=GREEN,
+                 relief=tk.FLAT, bd=6, width=20).pack(side=tk.LEFT, padx=(10, 0))
 
-        # Personality prompt
-        tk.Label(self._area, text="Personality prompt",
+        tk.Frame(self._area, bg=BG3, height=1).pack(fill=tk.X, pady=10)
+
+        # Starter prompt choices
+        tk.Label(self._area, text="Pick a starting personality",
                  font=("SF Pro Display", 11, "bold"),
                  bg=BG, fg=FG, anchor=tk.W).pack(anchor=tk.W)
+
+        self._starters = self._load_starters()
+        self._starter_choice = tk.StringVar(value="default")
+
+        for key, label, _ in self._starters:
+            tk.Radiobutton(
+                self._area, text=label, variable=self._starter_choice,
+                value=key, font=("SF Pro Display", 11), bg=BG, fg=FG,
+                selectcolor=BG3, activebackground=BG, activeforeground=GREEN,
+                anchor=tk.W, command=self._on_starter_change,
+            ).pack(anchor=tk.W, padx=8)
+        tk.Radiobutton(
+            self._area, text="Build your own", variable=self._starter_choice,
+            value="custom", font=("SF Pro Display", 11), bg=BG, fg=FG,
+            selectcolor=BG3, activebackground=BG, activeforeground=GREEN,
+            anchor=tk.W, command=self._on_starter_change,
+        ).pack(anchor=tk.W, padx=8)
+
         tk.Label(self._area,
-                 text="How should Graceful talk to you? Edit below or leave the default.",
-                 font=("SF Pro Display", 10), bg=BG, fg=FG2).pack(anchor=tk.W, pady=(2, 6))
+                 text="Edit below to customize, or leave as-is.",
+                 font=("SF Pro Display", 10), bg=BG, fg=FG2).pack(anchor=tk.W, pady=(6, 4))
 
-        # Load default prompt
-        default_prompt = ""
-        for candidate in [
-            os.path.join(DIR, "default_system_prompt.txt"),
-        ]:
-            if os.path.isfile(candidate):
-                try:
-                    default_prompt = open(candidate).read().strip()
-                    break
-                except Exception:
-                    pass
-        if not default_prompt:
-            default_prompt = "You are Graceful, a local AI assistant. You speak directly and do not flatter."
-
+        # Editable prompt textarea
         self._persona_text = scrolledtext.ScrolledText(
-            self._area, height=8, font=MONO,
+            self._area, height=7, font=MONO,
             bg="#050505", fg="#7dd9a0", insertbackground=GREEN,
             relief=tk.FLAT, borderwidth=0, wrap=tk.WORD,
         )
-        self._persona_text.insert("1.0", default_prompt)
         self._persona_text.pack(fill=tk.BOTH, expand=True)
+        # Load the default starter
+        self._on_starter_change()
 
         brow = tk.Frame(self._area, bg=BG)
-        brow.pack(fill=tk.X, pady=(14, 0))
+        brow.pack(fill=tk.X, pady=(10, 0))
         tk.Button(brow, text="Skip  →", font=("SF Pro Display", 12),
                   bg=BG3, fg=FG2, relief=tk.FLAT, padx=16, pady=8,
                   cursor="hand2", command=lambda: self._goto(4)).pack(side=tk.RIGHT, padx=(8, 0))
@@ -781,8 +817,22 @@ class App(tk.Tk):
                   bg=GREEN, fg="#000", relief=tk.FLAT, padx=22, pady=8,
                   cursor="hand2", command=self._save_persona).pack(side=tk.RIGHT)
 
+    def _on_starter_change(self):
+        choice = self._starter_choice.get()
+        if choice == "custom":
+            # Clear and let user write from scratch
+            self._persona_text.delete("1.0", tk.END)
+            self._persona_text.focus_set()
+            return
+        for key, _, text in self._starters:
+            if key == choice:
+                self._persona_text.delete("1.0", tk.END)
+                self._persona_text.insert("1.0", text)
+                return
+
     def _save_persona(self):
-        name = self._persona_name.get().strip()
+        user_name = self._persona_name.get().strip()
+        assistant_name = self._assistant_name.get().strip() or "Graceful"
         prompt_text = self._persona_text.get("1.0", tk.END).strip()
 
         # Save config.json
@@ -794,23 +844,23 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-        if name:
-            config["user_name"] = name
+        config["assistant_name"] = assistant_name
+        if user_name:
+            config["user_name"] = user_name
         os.makedirs(DATA_DIR, exist_ok=True)
-        json.dump(config, open(config_path, "w"), indent=2)
 
-        # Save personality prompt
+        # Save personality prompt file
         personalities_dir = os.path.join(DATA_DIR, "personalities")
         os.makedirs(personalities_dir, exist_ok=True)
-        if name:
-            fname = f"{name.lower()}_system_prompt.txt"
+        if user_name:
+            fname = f"{user_name.lower()}_system_prompt.txt"
             config["personality_prompt"] = f"personalities/{fname}"
-            json.dump(config, open(config_path, "w"), indent=2)
         else:
             fname = "default_system_prompt.txt"
         with open(os.path.join(personalities_dir, fname), "w") as f:
             f.write(prompt_text)
 
+        json.dump(config, open(config_path, "w"), indent=2)
         self._goto(4)
 
     # ── Step 4: Done ──────────────────────────────────────────────────────
