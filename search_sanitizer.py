@@ -344,6 +344,17 @@ def should_search_v2(msg: str) -> tuple:
         if re.search(pattern, msg_lower):
             return True, "explicit_search_intent"
 
+    # Theory/domain terms checked before current-events so that
+    # "Deleuze 2025 paper" uses the corpus instead of triggering a web search
+    _theory = [
+        r'\b(baudrillard|deleuze|foucault|derrida|heidegger|lacan|bourdieu)\b',
+        r'\b(simulacra|rhizome|deterritorializ|schizoanalysis|phenomenolog)\b',
+        r'\b(hessian|manifold|curvature|eigenvalue|loss landscape)\b',
+    ]
+    for pattern in _theory:
+        if re.search(pattern, msg_lower):
+            return False, "user_domain_use_corpus"
+
     _current = [
         r'\b(today|yesterday|this week|this month|right now|currently|latest|recent)\b',
         r'\b(2024|2025|2026)\b',
@@ -388,15 +399,6 @@ def should_search_v2(msg: str) -> tuple:
     for pattern in _code:
         if re.search(pattern, msg_lower):
             return False, "code_request"
-
-    _theory = [
-        r'\b(baudrillard|deleuze|foucault|derrida|heidegger|lacan|bourdieu)\b',
-        r'\b(simulacra|rhizome|deterritorializ|schizoanalysis|phenomenolog)\b',
-        r'\b(hessian|manifold|curvature|eigenvalue|loss landscape)\b',
-    ]
-    for pattern in _theory:
-        if re.search(pattern, msg_lower):
-            return False, "user_domain_use_corpus"
 
     # Suppress search for clearly theoretical/analytical messages even if they have year numbers
     _analytical = [
