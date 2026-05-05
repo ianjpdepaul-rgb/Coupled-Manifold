@@ -6300,7 +6300,7 @@ async def api_reset():
     # ── session clearing (from /api/new) ──
     with _session_lock:
         _session_history.clear()
-    _active_session_ts[0] = None
+        _active_session_ts[0] = None
     _session_epoch[0] += 1
     mem.history.start_new_session()     # clear model context + summaries + set session boundary
     return JSONResponse({"ok": True, "turn_count": 0})
@@ -6312,11 +6312,11 @@ async def api_fork(data: dict = Body(...)):
     sessions appear in the sidebar right away."""
     _save_session()                        # persist current session first
     truncated = data.get("history", [])   # history up to the fork point
-    _active_session_ts[0] = None          # will create a new file on next save
+    with _session_lock:
+        _active_session_ts[0] = None      # will create a new file on next save
+        _session_history[:] = truncated
     _session_epoch[0] += 1
     _list_sessions_ts[0] = 0.0            # ensure both original + forked session appear
-    with _session_lock:
-        _session_history[:] = truncated
     # Save the forked session immediately so it appears in the sidebar
     fork_id = None
     if len(truncated) >= 2:
