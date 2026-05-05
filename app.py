@@ -6244,6 +6244,9 @@ async def api_new():
     ctrl.anti_count = 0
     ctrl.session_anchor = None
     ctrl.consec_flattery = 0
+    # Clear session-scoped modes
+    _socratic_mode[0] = False
+    _compress_mode[0] = False
     # Clear session-scoped persona (unless persistent)
     if _active_persona[0] and not _active_persona[0].get("persistent"):
         _active_persona[0] = None
@@ -6278,6 +6281,8 @@ async def api_reset():
     ctrl.manual_mode = None
     ctrl.low_pct = 30
     _code_ns.clear()
+    _socratic_mode[0] = False
+    _compress_mode[0] = False
     # ── pending trace ──
     with _pending_trace_lock:
         _pending_trace[0] = None

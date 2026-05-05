@@ -1741,7 +1741,7 @@ async function sendEdit(msgIdx,newText){
           finalizeStream(clean,history.length-1);
           if(item.status){;_setTracePill(item.status);updateMedulla(item.status,item.history);}
           // Auto-refresh Named Memories panel if it's open and a /remember command was used
-          if(text&&text.toLowerCase().startsWith("/remember ")&&document.body.classList.contains("mem-open")){
+          if(newText&&newText.toLowerCase().startsWith("/remember ")&&document.body.classList.contains("mem-open")){
             window._loadMemPanel&&window._loadMemPanel();
           }
         }else if(item.t==="err"){
@@ -2023,6 +2023,10 @@ async function newChat(){
   renderHistory();_persistSession("newChat");
   _allSessions=d.sessions||[];renderSessions(_allSessions);
   var notesEl=document.getElementById("session-notes");if(notesEl)notesEl.value="";
+  // Clear session-scoped mode indicators
+  _statusStrip.clear('socratic');_statusStrip.clear('compress');_statusStrip.clear('antagonist');
+  // Clear persona badge
+  var pb=document.getElementById("persona-badge");if(pb){pb.style.display="none";pb.textContent="";}
   _updateResumeBtn();
 }
 window.newChat=newChat;  // called from inline onclick — must be global
