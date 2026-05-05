@@ -45,6 +45,19 @@ The script will:
 
 ---
 
+## First-time launch
+
+The first time you open the app:
+
+1. A Terminal window appears showing boot progress
+2. The model loads into memory — this takes **15-30 seconds** and the terminal will show loading bars
+3. Once you see `Ready.` and a URL, the browser opens automatically to `http://localhost:7860`
+4. The chat interface appears. Type anything to start
+
+The model download and loading only happens once per session. After the first load, responses are fast.
+
+---
+
 ## Every launch after setup
 
 Double-click **`Graceful.app`**.
@@ -71,15 +84,23 @@ Type these in the chat input:
 | `/clear` | Clear the chat display |
 | `/trace` | Show current Hessian trace value |
 | `/spectrum` | Show curvature spectrum chart |
+| `/adapter` | Show adapter weight status |
+| `/experiment` | Run adversarial self-test |
+| `/think` | Toggle step-by-step reasoning mode |
+| `/help` | List all commands (50+) |
+
+The table above shows the most common commands. Type `/help` in the chat for the full list, including research tools (`/analyze`, `/hypothesis`, `/zettelkasten`), teaching modes (`/socratic`, `/eli5`, `/teacher`), and session management (`/backup`, `/compress`, `/scaffold`).
 
 ---
 
 ## Features
 
 - **Streaming chat** — responses appear word by word
+- **Hessian trace monitoring** — real-time curvature measurement of model attention, the core differentiator from other local LLM apps
 - **Think mode** — model reasons step by step before answering
 - **Memory & corpus RAG** — retrieves relevant context from saved notes and documents
 - **LoRA online learning** — adapter weights update from your conversations
+- **Anti-LoRA pathological correction** — automatic geometric intervention when attention collapses
 - **CSV / JSON export** — download full session transcripts
 - **Voice TTS** — text-to-speech readback of responses
 - **Drag-and-drop files** — drop PDFs, documents, or images into the chat
@@ -109,7 +130,7 @@ Then try opening it again.
 
 **Slow first response** — Normal. The model takes 15–30 seconds to load on first use each session. After that, responses are fast.
 
-**"Python 3 not found"** — Install from [python.org](https://python.org) and re-run `setup.sh`.
+**"Python 3 not found"** — Install via Homebrew: `brew install python@3.11`. If you don't have Homebrew, install it first from [brew.sh](https://brew.sh), or download Python from [python.org](https://python.org) and re-run `setup.sh`.
 
 **Model download fails** — Check your internet connection. The model is ~4 GB and downloads from HuggingFace. No token is required.
 
@@ -138,6 +159,16 @@ This application is a deployment of the Coupled Manifold Safety Framework. The t
 [ResearchGate — Ian J. Preston-Campbell](https://www.researchgate.net/profile/Ian-Preston-Campbell)
 
 [Substack — ijpc43.substack.com](https://ijpc43.substack.com)
+
+---
+
+## Known limitations
+
+- First response per session takes 15-30 seconds while the model loads into memory
+- Hessian trace computation runs one turn behind (current turn's trace reflects the previous response)
+- Search APIs are optional and require manual configuration during setup
+- The app requires Apple Silicon — Intel Macs are not supported
+- This is a research deployment; expect rough edges
 
 ---
 

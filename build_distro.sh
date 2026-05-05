@@ -87,13 +87,10 @@ echo "  Building Graceful.app..."
 
 cat << 'LAUNCHER' > "$MACOS/Graceful"
 #!/bin/bash
-# Graceful.app — self-bootstrapping launcher
-# uv is bundled: no Python needed on the host machine.
+# Graceful.app — GUI-only launcher
+# Finds Python, runs launch.py. Never opens Terminal.
 
 # ── Translocation guard ──────────────────────────────────────────
-# macOS quarantines apps opened from a zip. The OS copies the .app
-# to a random /private/var/folders/.../AppTranslocation/ path, which
-# breaks every relative path the launcher uses.
 case "$(cd "$(dirname "$0")" && pwd)" in
   */AppTranslocation/*)
     osascript -e 'display dialog "macOS is running Graceful from a temporary quarantine folder.\n\nPlease move Graceful.app to your Applications folder or Desktop, then double-click it again." buttons {"OK"} default button 1 with title "Graceful — Move Required" with icon caution'
@@ -105,143 +102,56 @@ APP_DIR="$(cd "$(dirname "$0")" && pwd)"   # .app/Contents/MacOS
 ROOT="$(cd "$APP_DIR/../../.." && pwd)"    # the Graceful_App folder
 UV="$APP_DIR/uv"
 VENV="$ROOT/graceful_env"
-PY="$VENV/bin/python3"
-LOG="$ROOT/manifold_data/logs/launch.log"
 
 cd "$ROOT"
 mkdir -p "$ROOT/manifold_data/logs"
 xattr -cr "$ROOT/Graceful.app" 2>/dev/null || true
 export MANIFOLD_DIR="$ROOT"
 
-# ── First run ─────────────────────────────────────────────────────
-if [ ! -f "$PY" ]; then
+# ── Find Python ──────────────────────────────────────────────────
+# Tier 1: venv already exists from a previous setup
+if [ -f "$VENV/bin/python3" ]; then
+    PYTHON="$VENV/bin/python3"
 
-    REPLY=$(osascript << 'DIALOG'
-display dialog "Welcome to Graceful.
+# Tier 2: system Python 3.9+ with tkinter
+elif command -v python3 &>/dev/null; then
+    SYS_OK=$(python3 -c '
+import sys
+if sys.version_info >= (3, 9):
+    try:
+        import tkinter
+        print("yes")
+    except ImportError:
+        print("no-tk")
+else:
+    print("no-ver")
+' 2>/dev/null)
+    if [ "$SYS_OK" = "yes" ]; then
+        PYTHON="$(command -v python3)"
+    else
+        PYTHON=""
+    fi
+else
+    PYTHON=""
+fi
 
-First launch will:
-  • Install everything automatically  (~3 min)
-  • Download the AI model one time    (~4 GB)
-  • Open your browser when ready
+# Tier 3 fallback: use bundled uv to install Python
+if [ -z "$PYTHON" ] && [ -x "$UV" ]; then
+    "$UV" python install 3.12 --quiet 2>/dev/null
+    UV_PY=$("$UV" python find 3.12 2>/dev/null)
+    if [ -n "$UV_PY" ] && [ -x "$UV_PY" ]; then
+        PYTHON="$UV_PY"
+    fi
+fi
 
-No Python installation needed — everything is bundled.
-
-Click Setup to begin." \
-        buttons {"Cancel", "Setup"} default button 2 \
-        with title "Graceful — First Launch" \
-        with icon note
-return button returned of result
-DIALOG
-    )
-
-    [ "$REPLY" = "Cancel" ] && exit 0
-
-    # Write the auto-setup script
-    SETUP_SCRIPT="$ROOT/manifold_data/logs/auto_setup.sh"
-    cat > "$SETUP_SCRIPT" << AUTOSETUP
-#!/bin/bash
-set -e
-cd "$ROOT"
-echo ""
-echo "═══════════════════════════════════════════════════════"
-echo "  Graceful — First-time Setup"
-echo "═══════════════════════════════════════════════════════"
-echo ""
-
-# 1. Install Python 3.12 via uv (no system Python needed)
-echo "  Installing Python 3.12..."
-"$UV" python install 3.12 --quiet
-echo "✅  Python 3.12 ready."
-
-# 2. Create virtualenv
-echo "  Creating virtual environment..."
-"$UV" venv "$VENV" --python 3.12 --quiet
-echo "✅  Environment ready."
-
-# 3. Bootstrap pip inside venv
-"$PY" -m ensurepip --upgrade 2>/dev/null || true
-if [ ! -f "$VENV/bin/pip" ]; then
-    osascript -e 'display dialog "pip could not be installed in the virtual environment.\n\nPlease install Python from python.org and try again." buttons {"OK"} default button 1 with title "Graceful — Setup Error" with icon stop'
+# ── Fatal: no Python found ───────────────────────────────────────
+if [ -z "$PYTHON" ]; then
+    osascript -e 'display dialog "Python 3.9 or later is required but was not found.\n\nInstall Python from python.org and try again." buttons {"OK"} default button 1 with title "Graceful — Python Required" with icon stop'
     exit 1
 fi
 
-# 4. Install dependencies
-echo "  Installing dependencies (this takes ~2 min)..."
-"$UV" pip install -r "$ROOT/requirements.txt" --python "$PY" --quiet
-echo "✅  Dependencies installed."
-
-# 5. Homebrew + tesseract (optional — for OCR on image PDFs)
-if ! command -v brew &>/dev/null; then
-    BREW_REPLY=\$(osascript -e 'display dialog "Install Homebrew?\n\n(Needed for OCR on image PDFs — app works without it.)" buttons {"No thanks", "Install"} default button 1 with title "Graceful — Optional" with icon note' 2>/dev/null) || BREW_REPLY=""
-    case "\$BREW_REPLY" in
-        *Install*)
-            echo "  Installing Homebrew..."
-            /bin/bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/null || true
-            if [ -f "/opt/homebrew/bin/brew" ]; then
-                eval "\$(/opt/homebrew/bin/brew shellenv)"
-            fi
-            ;;
-        *)
-            echo "  Homebrew skipped — OCR on image PDFs won't be available."
-            ;;
-    esac
-fi
-if command -v brew &>/dev/null && ! brew list tesseract &>/dev/null 2>&1; then
-    echo "  Installing tesseract (OCR)..."
-    brew install tesseract -q 2>/dev/null || true
-fi
-echo ""
-
-# 6. Download the AI model
-echo "═══════════════════════════════════════════════════════"
-echo "  Downloading AI model (~4 GB — this is the slow part)"
-echo "═══════════════════════════════════════════════════════"
-echo ""
-"$PY" -c "
-from huggingface_hub import snapshot_download
-print('  Downloading mlx-community/gemma-4-e4b-it-4bit ...')
-snapshot_download(repo_id='mlx-community/gemma-4-e4b-it-4bit')
-print('  Model downloaded.')
-"
-
-echo ""
-echo "═══════════════════════════════════════════════════════"
-echo "✅  Setup complete! Opening Graceful..."
-echo "═══════════════════════════════════════════════════════"
-echo ""
-
-# Launch server + browser
-source "$VENV/bin/activate"
-nohup python3 "$ROOT/app.py" >> "$LOG" 2>&1 &
-i=0; while [ \$i -lt 60 ]; do
-    nc -z 127.0.0.1 7860 2>/dev/null && open http://localhost:7860 && exit
-    sleep 2; i=\$((i+1))
-done
-AUTOSETUP
-    chmod +x "$SETUP_SCRIPT"
-
-    osascript -e "tell application \"Terminal\"
-        activate
-        do script \"bash '$SETUP_SCRIPT'\"
-    end tell"
-    exit 0
-fi
-
-# ── Normal launch ─────────────────────────────────────────────────
-# Use tkinter GUI launcher if available
-if "$PY" -c "import tkinter" 2>/dev/null && [ -f "$ROOT/launch.py" ]; then
-    exec "$PY" "$ROOT/launch.py"
-fi
-
-# Fallback: headless server + open browser
-source "$VENV/bin/activate"
-nohup python3 "$ROOT/app.py" >> "$LOG" 2>&1 &
-SRV=$!
-( i=0; while [ $i -lt 60 ]; do
-    nc -z 127.0.0.1 7860 2>/dev/null && open http://localhost:7860 && exit
-    sleep 2; i=$((i+1))
-done ) &
-wait $SRV
+# ── Launch ───────────────────────────────────────────────────────
+exec "$PYTHON" "$ROOT/launch.py"
 LAUNCHER
 chmod +x "$MACOS/Graceful"
 

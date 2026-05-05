@@ -28,7 +28,8 @@ MONO  = ("SF Mono", 11)
 
 
 def is_setup_done():
-    return os.path.isdir(VENV) and os.path.isfile(PY)
+    sentinel = os.path.join(DATA_DIR, ".setup_complete")
+    return os.path.isdir(VENV) and os.path.isfile(PY) and os.path.isfile(sentinel)
 
 
 def get_ram_gb() -> float:
@@ -493,21 +494,16 @@ class App(tk.Tk):
         self._install_btn.config(state=tk.DISABLED, text="Installing…")
         self._install_pbar.start(10)
 
+        req_file = os.path.join(DIR, "requirements.txt")
         steps = [
             ("Creating virtual environment…",
-             f"python3 -m venv '{VENV}'"),
+             f"'{sys.executable}' -m venv '{VENV}'"),
             ("Bootstrapping pip…",
              f"'{PY}' -m ensurepip --upgrade"),
             ("Upgrading pip…",
              f"'{PY}' -m pip install --upgrade pip -q"),
-            ("Installing MLX and mlx-vlm…",
-             f"'{PY}' -m pip install mlx mlx-vlm -q"),
-            ("Installing supporting packages…",
-             f"'{PY}' -m pip install "
-             f"numpy scipy matplotlib sympy seaborn statsmodels scikit-learn "
-             f"duckduckgo-search huggingface_hub fastapi uvicorn python-multipart "
-             f"pandas pillow pymupdf python-docx openpyxl pdfplumber python-pptx ebooklib pytesseract "
-             f"sentence-transformers beautifulsoup4 httpx soundfile opencv-python -q"),
+            ("Installing dependencies…",
+             f"'{PY}' -m pip install -r '{req_file}' -q"),
         ]
 
         def _run():
@@ -741,6 +737,10 @@ class App(tk.Tk):
         ).pack()
 
     def _setup_then_launch(self):
+        # Mark setup as complete
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(os.path.join(DATA_DIR, ".setup_complete"), "w") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%S"))
         # Re-build as launcher UI, then auto-launch
         for w in self.winfo_children():
             w.destroy()

@@ -17,9 +17,15 @@ import concurrent.futures as _futures, traceback as _tb, base64 as _b64, io as _
 from contextlib import redirect_stdout, redirect_stderr
 
 
-def _trace_valid(t):
-    """True if t is a real finite trace value (not None, not NaN, not Inf)."""
-    return t is not None and isinstance(t, (int, float)) and not math.isnan(t) and not math.isinf(t)
+from graceful.config import (
+    _trace_valid, _cosine_lr, load_keys, _KEYS_PATH, _KEYS_TEMPLATE, _SETTINGS_PATH,
+    MODEL, MODEL_SMALL, RANK, HUTCH_N, MAX_CTX, TRACE_CTX, TRACE_LAYERS,
+    MAX_NEW, LR, GRAD_ACCUM, _VISION_TOKENS, DATA_DIR, MAX_PROMPT_CHARS,
+    DEV, CONSEC_PATHO_LIMIT, TREND_WINDOW, TREND_THRESHOLD, EXEC_TIMEOUT,
+)
+from graceful.flattery import compute_flattery_score, _is_greeting_msg, _lexical_match, _AGREEMENT_WORDS, _FRICTION_WORDS, _GREETING_WORDS
+from graceful.snobline import SnobLine, _ABSOLUTE_FLOOR, _SUSTAINED_FLOOR, _SUSTAINED_COUNT, _ANCHOR_WINDOW, _ANCHOR_DRIFT_LIMIT, _ANCHOR_TERMINATE
+from graceful.dual_adapter import DualAdapter
 
 # ═══════════════════════════════════════════════════
 # STARTUP GUARDS  (fail fast, clear messages)
@@ -145,41 +151,8 @@ def get_thinking_phrase():
 from memory import Memory
 
 # ═══════════════════════════════════════════════════
-# CONFIG
+# CONFIG  (constants imported from graceful.config at top of file)
 # ═══════════════════════════════════════════════════
-
-MODEL       = "mlx-community/gemma-4-e4b-it-4bit"
-MODEL_SMALL = MODEL   # single model — MLX Gemma 4 E4B handles all complexity tiers
-RANK        = 8
-HUTCH_N     = 1
-MAX_CTX     = 2048   # tokens for online-learning backprop — halved to reduce memory pressure
-TRACE_CTX   = 32     # Hessian trace window — reduced from 64 to halve GPU backward pass time
-TRACE_LAYERS = 8     # adapter layers to subsample per trace call (rotate through all of them)
-MAX_NEW     = 1024   # max generated tokens — M/default budget
-LR          = 1e-5
-GRAD_ACCUM  = 4      # gradient accumulation steps for /finetune and API training
-_VISION_TOKENS = 140 # Gemma 4 vision: default low for speed (140 tokens). /visionquality to raise
-DATA_DIR    = "./manifold_data"
-MAX_PROMPT_CHARS = 8000   # reduced from 12000 — less context assembled per turn = faster TTFT
-
-
-def _cosine_lr(step: int, total: int, lr_max: float = LR, lr_min: float = 1e-7) -> float:
-    """Cosine annealing learning rate schedule."""
-    if total <= 1:
-        return lr_max
-    return lr_min + 0.5 * (lr_max - lr_min) * (1 + np.cos(np.pi * step / total))
-_KEYS_PATH = f"{DATA_DIR}/keys.json"
-
-
-def load_keys() -> dict:
-    """Load API keys / config from keys.json."""
-    if os.path.exists(_KEYS_PATH):
-        try:
-            with open(_KEYS_PATH) as _kf:
-                return json.load(_kf)
-        except Exception:
-            pass
-    return {}
 
 
 # ── Single-instance lockfile ──────────────────────────────────────────────────
@@ -250,13 +223,6 @@ signal.signal(signal.SIGINT,  _handle_signal)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 7. keys.json template — create on first run so the user knows what to fill in
-_KEYS_TEMPLATE = {
-    "brave":            "",
-    "google_search":    "",
-    "google_cx":        "",
-    "youtube":          "",
-    "unpaywall_email":  "",
-}
 if not os.path.exists(_KEYS_PATH):
     try:
         with open(_KEYS_PATH, "w") as _ktf:
@@ -266,19 +232,8 @@ if not os.path.exists(_KEYS_PATH):
     except Exception:
         pass
 
-
-DEV       = "mlx"  # MLX auto-targets Apple Silicon Neural Engine + GPU
-
-CONSEC_PATHO_LIMIT = 3
-TREND_WINDOW       = 5
-TREND_THRESHOLD    = -15
-EXEC_TIMEOUT       = 25      # Python sandbox execution timeout (seconds)
-MAX_PROMPT_CHARS   = MAX_PROMPT_CHARS  # defined in CONFIG block above
-
 for d in ("sessions", "checkpoints", "logs", "static", "corpus"):
     os.makedirs(f"{DATA_DIR}/{d}", exist_ok=True)
-
-_SETTINGS_PATH = f"{DATA_DIR}/user_settings.json"
 
 # Write PWA static files
 os.makedirs("./static", exist_ok=True)
@@ -381,261 +336,7 @@ print("=" * 50)
 print(f"  Device: {DEV}")
 
 
-# ═══════════════════════════════════════════════════
-# DUAL ADAPTER
-# ═══════════════════════════════════════════════════
-
-class DualAdapter(nn.Module):
-    """LoRA + Anti-LoRA dual adapter — MLX native implementation."""
-    def __init__(self, base, rank: int = RANK):
-        super().__init__()
-        self.base = base
-        # Infer dimensions from base layer (handles Linear and QuantizedLinear)
-        if hasattr(base, 'scales'):                      # QuantizedLinear (4-bit)
-            out_f = base.scales.shape[0]
-            in_f  = base.scales.shape[1] * base.group_size
-        elif hasattr(base, 'weight'):                    # Regular Linear
-            out_f, in_f = base.weight.shape[0], base.weight.shape[1]
-        else:
-            raise ValueError(f"DualAdapter: unrecognised layer type {type(base)}")
-        self.lA = mx.random.normal([rank, in_f])  * 0.01
-        self.lB = mx.zeros([out_f, rank])
-        self.aA = mx.random.normal([rank, in_f])  * 0.01
-        self.aB = mx.zeros([out_f, rank])
-        self.scale   = 2.0
-        self.a_str   = 0.1
-        self.lora_on = True
-        self.anti_on = False
-
-    def __call__(self, x):
-        out = self.base(x)
-        if self.lora_on:
-            out = out + (x @ self.lA.T) @ self.lB.T * self.scale
-        if self.anti_on:
-            out = out + (x @ self.aA.T) @ self.aB.T * self.a_str
-        return out
-
-
-# ═══════════════════════════════════════════════════
-# SNOBLINE
-# ═══════════════════════════════════════════════════
-
-_ABSOLUTE_FLOOR  = -150  # hard anti-mode trigger regardless of percentiles
-_SUSTAINED_FLOOR = -100  # softer floor requiring N consecutive turns
-_SUSTAINED_COUNT = 3
-_ANCHOR_WINDOW   = 5     # turns to establish session baseline
-_ANCHOR_DRIFT_LIMIT = -100  # rolling mean vs session anchor before tightening thresholds
-_ANCHOR_TERMINATE   = -150  # rolling mean vs session anchor before termination
-
-
-class SnobLine:
-    def __init__(self, window=10, low_pct=30, high_pct=50, max_anti=2):
-        self.window, self.low_pct, self.high_pct = window, low_pct, high_pct
-        self.max_anti   = max_anti
-        self.mode       = "lora"
-        self.history    = []
-        self.all_traces = []
-        self.anti_count = 0
-        self.consec_patho = 0
-        self.log        = []
-        self.session_anchor = None   # mean of first 5 traces — fixed session baseline
-        self.consec_flattery = 0     # consecutive turns with flattery_score > 0.8
-        self.manual_mode = None      # set by /adapter mode — overrides automatic routing
-
-    def step(self, trace, turn):
-        """Step the SnobLine controller with a new trace measurement.
-
-        trace: Optional[float] — a real Hessian trace value, or None if no
-               valid measurement was obtained this turn. When None, the turn
-               is a no-op: no internal state changes, current mode returned
-               unchanged. A measured 0.0 is a real value and IS processed.
-        turn:  int — current turn number.
-        Returns: str — current mode ("lora" or "anti").
-        """
-        # Manual override — user explicitly set a mode, don't auto-route until cleared
-        if self.manual_mode is not None:
-            return self.manual_mode
-
-        # No measurement → no-op, return current mode unchanged
-        if trace is None:
-            return self.mode
-
-        self.all_traces.append(trace)
-
-        # ── Set session anchor after first N turns ──────────────────────────
-        if len(self.all_traces) == _ANCHOR_WINDOW and self.session_anchor is None:
-            self.session_anchor = float(np.mean(self.all_traces))
-            self.log.append({"turn": turn, "session_anchor": self.session_anchor})
-
-        # ── Circuit breaker 1: absolute floor ──────────────────────────────
-        if trace < _ABSOLUTE_FLOOR:
-            if self.mode != "anti":
-                self.mode, self.anti_count = "anti", 0
-                self.consec_patho += 1
-                self.log.append({"turn": turn, "to": "anti", "trace": trace,
-                                 "reason": "absolute_floor",
-                                 "absolute_floor_triggered": True})
-            return self.mode
-
-        # ── Circuit breaker 2: sustained negative ──────────────────────────
-        if len(self.all_traces) >= _SUSTAINED_COUNT:
-            recent_n = self.all_traces[-_SUSTAINED_COUNT:]
-            if all(t < _SUSTAINED_FLOOR for t in recent_n):
-                if self.mode != "anti":
-                    self.mode, self.anti_count = "anti", 0
-                    self.consec_patho += 1
-                    self.log.append({"turn": turn, "to": "anti",
-                                     "reason": "sustained_negative",
-                                     "sustained_negative_triggered": True})
-                return self.mode
-
-        # ── Anchor drift: tighten thresholds if session is declining ───────
-        if self.session_anchor is not None and len(self.all_traces) >= 8:
-            current_mean = float(np.mean(self.all_traces[-5:]))
-            anchor_drift = current_mean - self.session_anchor
-            if anchor_drift < _ANCHOR_DRIFT_LIMIT:
-                new_low = min(self.low_pct + 10, 50)
-                if new_low != self.low_pct:
-                    self.low_pct = new_low
-                    self.log.append({"turn": turn, "anchor_drift": anchor_drift,
-                                     "new_low_pct": self.low_pct})
-            elif anchor_drift > -50 and self.low_pct > 30:
-                # Session recovering — ease thresholds back toward baseline
-                self.low_pct = max(30, self.low_pct - 5)
-
-        # ── Normal percentile routing ───────────────────────────────────────
-        if self.mode == "anti":
-            self.anti_count += 1
-            if self.anti_count >= self.max_anti:
-                self.mode, self.anti_count = "lora", 0
-                self.log.append({"turn": turn, "to": "lora", "reason": "max_duration"})
-                return self.mode
-        else:
-            self.history.append(trace)
-        if len(self.history) < 3:
-            return self.mode
-        recent = self.history[-self.window:]
-        low  = float(np.percentile(recent, self.low_pct))
-        high = float(np.percentile(recent, self.high_pct))
-        if self.mode == "lora" and trace < low:
-            self.mode, self.anti_count = "anti", 0
-            self.consec_patho += 1
-            self.log.append({"turn": turn, "to": "anti",
-                             "trace": trace, "low": low, "high": high})
-        elif self.mode == "anti" and trace > high:
-            self.mode, self.anti_count = "lora", 0
-            self.consec_patho = 0
-            self.log.append({"turn": turn, "to": "lora", "reason": "recovered"})
-        else:
-            if self.mode == "lora":
-                self.consec_patho = 0
-        return self.mode
-
-    def trend(self):
-        if len(self.all_traces) < 3:
-            return "building", 0, 0
-        r = self.all_traces[-TREND_WINDOW:] if len(self.all_traces) >= TREND_WINDOW else self.all_traces
-        slope = (r[-1] - r[0]) / len(r) if len(r) > 1 else 0
-        avg   = np.mean(r)
-        return ("declining" if slope < -10 else "rising" if slope > 10 else "stable"), avg, slope
-
-    def should_terminate(self):
-        if self.consec_patho >= CONSEC_PATHO_LIMIT:
-            return True, "sustained_pathological"
-        if len(self.all_traces) >= TREND_WINDOW:
-            r = self.all_traces[-TREND_WINDOW:]
-            if (r[-1] - r[0]) / len(r) < TREND_THRESHOLD:
-                return True, "drift_detected"
-        # Anchor drift termination — session mean too far below baseline
-        if self.session_anchor is not None and len(self.all_traces) >= 8:
-            current_mean = float(np.mean(self.all_traces[-5:]))
-            if current_mean - self.session_anchor < _ANCHOR_TERMINATE:
-                return True, "anchor_drift"
-        return False, None
-
-    def get_thresholds(self):
-        if len(self.history) < 3:
-            return 0, 0
-        recent = self.history[-self.window:]
-        return float(np.percentile(recent, self.low_pct)), float(np.percentile(recent, self.high_pct))
-
-    def get_anti_strength(self, trace) -> float:
-        """
-        Scale roughening strength with pathology depth.
-        trace: Optional[float]. If None, returns a safe default (0.1).
-        Returns a_str in [0.05, 0.3]. Tapers during the anti window.
-        """
-        if trace is None:
-            return 0.1
-        if len(self.history) < 3:
-            strength = 0.1
-        else:
-            low, _ = self.get_thresholds()
-            if trace >= low:
-                strength = 0.05
-            else:
-                depth = abs(trace - low)
-                strength = min(0.3, 0.05 + (depth / 500))
-        # Taper across anti window: 100% → 80% → 60% → 40% minimum
-        # Linear decay so roughening stays effective across multi-turn pathology
-        if self.anti_count > 0:
-            strength *= max(0.4, 1.0 - (self.anti_count * 0.2))
-        return round(strength, 3)
-
-
-# ═══════════════════════════════════════════════════
-# FLATTERY DETECTION
-# ═══════════════════════════════════════════════════
-
-_AGREEMENT_WORDS = {
-    "agree", "exactly", "right", "absolutely", "definitely", "certainly",
-    "great point", "good point", "well said", "you're right", "correct",
-    "brilliant", "impressive", "fascinating", "wonderful", "excellent",
-    "i think you", "that's a great", "you make a good", "insightful",
-}
-
-_FRICTION_WORDS = {
-    "however", "but", "although", "disagree", "actually", "not quite",
-    "consider", "alternatively", "on the other hand", "challenge",
-    "push back", "counterpoint", "careful", "wrong", "incorrect",
-    "misleading", "oversimplif", "problematic", "tension",
-}
-
-
-def _lexical_match(phrase: str, text: str) -> bool:
-    """Word-boundary-aware phrase match to avoid false positives like 'agree' in 'disagree'."""
-    if ' ' in phrase:
-        return phrase in text  # multi-word: substring match is unambiguous
-    return bool(re.search(r'\b' + re.escape(phrase) + r'\b', text))
-
-
-def compute_flattery_score(response: str) -> float:
-    """
-    Lexical flattery detection independent of Hessian trace.
-    Returns 0.0 (no flattery) to 1.0 (pure sycophancy).
-    """
-    response_lower = response.lower()
-    words = response_lower.split()
-    if len(words) < 10:
-        return 0.0
-    agreement_hits = sum(1 for phrase in _AGREEMENT_WORDS if _lexical_match(phrase, response_lower))
-    friction_hits  = sum(1 for phrase in _FRICTION_WORDS  if _lexical_match(phrase, response_lower))
-    total = agreement_hits + friction_hits
-    if total == 0:
-        return 0.0
-    flattery  = agreement_hits / total
-    density   = total / (len(words) / 100)  # markers per 100 words
-    confidence = min(1.0, density / 3.0)
-    return round(flattery * confidence, 2)
-
-
-_GREETING_WORDS = {"hi", "hey", "hello", "thanks", "ok", "cool", "got it", "sup", "nice",
-                   "yo", "bye", "later", "cheers", "thx", "ty", "np", "k", "lol"}
-
-def _is_greeting_msg(msg: str) -> bool:
-    """Check if a message is a low-signal greeting/acknowledgement."""
-    m = msg.strip().lower().rstrip("!.?")
-    return m in _GREETING_WORDS or (len(m.split()) <= 2 and any(g in m for g in _GREETING_WORDS))
+# DualAdapter, SnobLine, flattery detection → imported from graceful.* (top of file)
 
 
 def _check_learn_diversity(response: str) -> bool:

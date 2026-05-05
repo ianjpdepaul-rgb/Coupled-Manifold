@@ -19,12 +19,27 @@ echo ""
 # ── 1. Python check ─────────────────────────────────────────────
 if ! command -v python3 &> /dev/null; then
     echo "❌  Python 3 not found."
-    echo "    Install from https://python.org then re-run this script."
+    echo "    Install via Homebrew: brew install python@3.11"
+    echo "    If you don't have Homebrew, install it first from brew.sh,"
+    echo "    or download Python from https://python.org and re-run setup.sh."
     read -p "    Press Enter to exit." _
     exit 1
 fi
-PY_VER=$(python3 --version)
-echo "✅  $PY_VER found."
+
+# Check Python version (MLX requires 3.9+, some deps require 3.10)
+PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+PYTHON_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
+PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
+
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 9 ]); then
+    echo "❌  Python $PYTHON_VERSION found, but Python 3.9 or later is required."
+    echo "    Install a newer Python: brew install python@3.11"
+    echo "    Or download from https://python.org and re-run setup.sh."
+    read -p "    Press Enter to exit." _
+    exit 1
+fi
+
+echo "✅  Python $PYTHON_VERSION OK"
 
 # ── 2. Apple Silicon check ───────────────────────────────────────
 ARCH=$(uname -m)
@@ -236,17 +251,23 @@ DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$DIR"
 xattr -cr "$DIR/Graceful.app" 2>/dev/null || true
 export MANIFOLD_DIR="$DIR"
-if python3 -c "import tkinter" 2>/dev/null; then
+VENV="$DIR/graceful_env"
+# Prefer venv python, fall back to system python3
+if [ -f "$VENV/bin/python3" ]; then
+    exec "$VENV/bin/python3" "$DIR/launch.py"
+elif python3 -c "import tkinter" 2>/dev/null; then
     exec python3 "$DIR/launch.py"
-fi
-if [ ! -d "$DIR/graceful_env" ]; then
-    osascript -e "tell app \"Terminal\" to do script \"cd \\\"$DIR\\\" && bash setup.sh\""
 else
-    CMD="cd \\\"$DIR\\\" && source graceful_env/bin/activate && python3 app.py"
-    osascript -e "tell app \"Terminal\" to do script \"$CMD\""
-    ( i=0; while [ $i -lt 90 ]; do nc -z 127.0.0.1 7860 2>/dev/null && open http://localhost:7860 && exit; sleep 2; i=$((i+1)); done ) &
+    # No tkinter — fall back to headless server
+    if [ -d "$VENV" ]; then
+        source "$VENV/bin/activate"
+        nohup python3 "$DIR/app.py" >> "$DIR/manifold_data/logs/launch.log" 2>&1 &
+        ( i=0; while [ $i -lt 60 ]; do nc -z 127.0.0.1 7860 2>/dev/null && open http://localhost:7860 && exit; sleep 2; i=$((i+1)); done ) &
+    else
+        osascript -e "tell app \"Terminal\" to do script \"cd \\\"$DIR\\\" && bash setup.sh\""
+        osascript -e 'tell app "Terminal" to activate'
+    fi
 fi
-osascript -e 'tell app "Terminal" to activate'
 LAUNCHER
 chmod +x "$MACOS/Graceful"
 
