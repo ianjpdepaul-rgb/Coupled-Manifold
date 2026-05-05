@@ -116,8 +116,8 @@ class GracefulAgent:
         self.active_sid = d.get("active_sid")
         self.history = d.get("history", [])
         self.medulla = MedullaState()
-        self.turn_log = []
-        self.errors = []
+        # Don't clear turn_log/errors — they belong to the agent run, not the session.
+        # Personas that create multiple sessions need the full turn history.
         return d
 
     def load_session(self, session_id: str) -> dict:
@@ -201,6 +201,11 @@ class GracefulAgent:
 
         elapsed = time.time() - t0
         full_response = "".join(response_chunks)
+
+        # Fall back to done event's history content when no deltas were streamed
+        # (some slash commands return their response without streaming)
+        if not full_response and last_history_msg:
+            full_response = last_history_msg.get("content", "")
 
         # Update agent state
         if status_raw:

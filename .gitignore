@@ -51,3 +51,4 @@ app.py.bak
 icon.png
 /static/
 *.jsonl
+!tests/chat_agent/baselines/*.jsonl

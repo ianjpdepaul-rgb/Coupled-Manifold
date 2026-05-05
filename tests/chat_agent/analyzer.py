@@ -69,14 +69,17 @@ def analyze_run(log_path: str | Path) -> dict:
                     "msg": t.get("user", "")[:80],
                 })
 
-        # 2. Stream errors (non-rate-limit)
+        # 2. Stream errors (non-rate-limit, non-client-error)
         for err in errors:
-            if err != "rate_limited":
-                anomalies.append({
-                    "persona": persona,
-                    "type": "stream_error",
-                    "detail": err,
-                })
+            if err == "rate_limited":
+                continue
+            # Client errors (4xx) are expected for edge case inputs — not blocking
+            is_client_error = err.startswith("http_4")
+            anomalies.append({
+                "persona": persona,
+                "type": "client_error" if is_client_error else "stream_error",
+                "detail": err,
+            })
 
         # 3. Extremely slow turns (> 60s)
         for i, t in enumerate(turns):

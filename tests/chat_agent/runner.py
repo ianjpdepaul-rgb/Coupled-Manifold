@@ -33,6 +33,9 @@ def _timestamp() -> str:
 
 def _run_persona(name: str, agent: GracefulAgent) -> dict:
     """Run a single persona and return its result dict."""
+    # Reset per-run state between personas (agent is reused across the suite)
+    agent.turn_log = []
+    agent.errors = []
     fn = ALL_PERSONAS[name]
     print(f"  [{name}] running...", end="", flush=True)
     t0 = time.time()
