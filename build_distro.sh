@@ -53,9 +53,33 @@ for f in "$DIR"/*.py; do
     cp "$f" "$DEST/$fname" && echo "    + $fname"
 done
 # Copy non-Python required files
-for f in requirements.txt README.md LICENSE icon.png setup.sh default_system_prompt.txt; do
+for f in requirements.txt README.md LICENSE icon.png setup.sh default_system_prompt.txt pytest.ini; do
     [ -f "$DIR/$f" ] && cp "$DIR/$f" "$DEST/$f" && echo "    + $f"
 done
+
+# ── Copy graceful/ package ──────────────────────────────────────
+echo ""
+echo "  Copying graceful/ package..."
+mkdir -p "$DEST/graceful"
+for f in "$DIR"/graceful/*.py; do
+    fname=$(basename "$f")
+    cp "$f" "$DEST/graceful/$fname" && echo "    + graceful/$fname"
+done
+echo "✅  graceful/ package copied ($(ls "$DEST/graceful/"*.py | wc -l | tr -d ' ') modules)."
+
+# ── Copy starter prompts ────────────────────────────────────────
+if [ -d "$DIR/starter_prompts" ]; then
+    mkdir -p "$DEST/starter_prompts"
+    cp -R "$DIR/starter_prompts/." "$DEST/starter_prompts/"
+    echo "✅  Starter prompts copied."
+fi
+
+# ── Copy tests (for consumer verification) ──────────────────────
+if [ -d "$DIR/tests" ]; then
+    mkdir -p "$DEST/tests"
+    cp -R "$DIR/tests/"*.py "$DEST/tests/" 2>/dev/null || true
+    echo "✅  Tests copied."
+fi
 
 # ── Copy UI ──────────────────────────────────────────────────────
 mkdir -p "$DEST/manifold_data/static"
@@ -64,7 +88,7 @@ mkdir -p "$DEST/manifold_data/static"
 echo "✅  UI copied."
 
 # ── Clean data skeleton ──────────────────────────────────────────
-mkdir -p "$DEST/manifold_data/"{checkpoints,corpus,sessions,logs,identity,backups}
+mkdir -p "$DEST/manifold_data/"{checkpoints,corpus,sessions,logs,identity,backups,personalities,consolidation}
 cat > "$DEST/manifold_data/identity.json" << 'EOF'
 {"thinkers":[],"concepts":[],"raw_notes":[],"iam_statements":[]}
 EOF

@@ -135,6 +135,9 @@ pip install fastapi uvicorn python-multipart -q
 echo "  Media: pillow, opencv-python, soundfile, miniaudio..."
 pip install pillow opencv-python soundfile miniaudio -q
 
+echo "  Desktop app: pywebview..."
+pip install pywebview -q
+
 echo "  Extras: beautifulsoup4, huggingface_hub, sympy, scikit-learn..."
 pip install beautifulsoup4 huggingface_hub sympy seaborn statsmodels scikit-learn ebooklib pytesseract -q
 
@@ -183,7 +186,7 @@ read -p "  Google Custom Search CX ID: " GOOGLE_CX
 echo "  Email for Unpaywall free PDF finder (any email works)"
 read -p "  Email: " UNPAYWALL_EMAIL
 
-mkdir -p "$DIR/manifold_data/static" "$DIR/manifold_data/corpus" "$DIR/manifold_data/checkpoints" "$DIR/manifold_data/sessions" "$DIR/manifold_data/logs"
+mkdir -p "$DIR/manifold_data/"{static,corpus,checkpoints,sessions,logs,identity,backups,personalities,consolidation}
 
 # Extract UI from app.py into static/index.html (app.py loads it at runtime)
 if [ ! -f "$DIR/manifold_data/static/index.html" ]; then
