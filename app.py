@@ -27,6 +27,7 @@ from graceful.flattery import compute_flattery_score, _is_greeting_msg, _lexical
 from graceful.snobline import SnobLine, _ABSOLUTE_FLOOR, _SUSTAINED_FLOOR, _SUSTAINED_COUNT, _ANCHOR_WINDOW, _ANCHOR_DRIFT_LIMIT, _ANCHOR_TERMINATE
 from graceful.dual_adapter import DualAdapter
 from graceful import coupled_trace as _coupled_trace
+from graceful import framework_confidence as _framework_conf
 
 # ═══════════════════════════════════════════════════
 # STARTUP GUARDS  (fail fast, clear messages)
@@ -5343,6 +5344,25 @@ plt.tight_layout()
         set_mode("anti", model_active)
         mode = "anti"
 
+    # ── Framework confidence — visible failure (Move 3) ───────────────────
+    _fw_conf = _framework_conf.compute_confidence(
+        trace=trace, drift=_drift_quick, flattery_score=_flattery_score,
+        trace_history=list(ctrl_active.all_traces),
+        coupled_nudge=_coupled_nudge_str)
+    _fw_conf_str, _fw_conf_detail = _framework_conf.format_confidence(_fw_conf)
+    # Log failures
+    _fw_failure = _framework_conf.build_failure_record(
+        turn_count[0], _fw_conf, trace, _drift_quick, _flattery_score)
+    if _fw_failure:
+        def _log_failure(_entry=_fw_failure):
+            try:
+                os.makedirs(f"{DATA_DIR}/logs", exist_ok=True)
+                with open(f"{DATA_DIR}/logs/framework_failures.jsonl", "a") as _ff:
+                    _ff.write(json.dumps(_entry) + "\n")
+            except Exception:
+                pass
+        threading.Thread(target=_log_failure, daemon=True).start()
+
     # Termination
     should_term, term_reason = ctrl_active.should_terminate()
     term_warning = ""
@@ -5571,6 +5591,9 @@ plt.tight_layout()
            + (f" | anchor_drift: {round(float(np.mean(ctrl_active.all_traces[-5:])) - ctrl_active.session_anchor, 1)}"
               if ctrl_active.session_anchor is not None and len(ctrl_active.all_traces) >= 8 else "")
            if _flattery_score > 0.0 or (ctrl_active.session_anchor is not None and len(ctrl_active.all_traces) >= 8) else "")
+        + (f"<br><b>CONFIDENCE</b>: {_fw_conf_str}"
+           + (f" <span style='color:#ffb74d'>{_fw_conf_detail}</span>" if _fw_conf_detail else "")
+           if _fw_conf_str else "")
         + f"</div>"
     )
 
@@ -5604,6 +5627,8 @@ plt.tight_layout()
         "response_similarity": _resp_sim,
         "model_trace_raw": round(_model_trace_raw, 1) if _trace_valid(_model_trace_raw) else None,
         "coupled_nudge": _coupled_nudge_str,
+        "framework_confidence": _fw_conf["confidence"],
+        "provisional": _fw_conf["provisional"],
     })
     if len(session_log) > 500:
         session_log[:] = session_log[-500:]
@@ -5697,6 +5722,14 @@ plt.tight_layout()
                        f"padding:1px 5px'>↗ {_drift:.2f}</span>")
     else:
         drift_badge = ""
+
+    # Provisional badge (Move 3) — visible failure marking
+    _provisional_badge = ""
+    if _fw_conf["provisional"] and _resp_len >= 30:
+        _provisional_badge = (
+            f" <span style='font-size:.72em;color:#ce93d8;"
+            f"border:1px solid rgba(206,147,216,.45);border-radius:3px;"
+            f"padding:1px 5px'>⚠ provisional</span>")
 
     # ── Auto code execution ──────────────────────────────────────
     if not _tools_used:   # don't double-execute if tool:run already ran
@@ -5801,7 +5834,7 @@ plt.tight_layout()
         except Exception:
             pass
 
-    body = _patho_wrap_open + response + term_warning + drift_badge + _dream_marker + _patho_wrap_close
+    body = _patho_wrap_open + response + term_warning + drift_badge + _provisional_badge + _dream_marker + _patho_wrap_close
     _medulla_full = "<!--MED-->" + medulla
     history.append({"role": "assistant",
                     "content": body + (_medulla_full if show_medulla[0] else "")})
