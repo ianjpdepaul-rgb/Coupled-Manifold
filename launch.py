@@ -64,22 +64,38 @@ def mem_summary() -> str:
 
 
 def _open_app_window(url="http://localhost:7860", server_proc=None):
-    """Open native webview window (macOS WebKit — no browser).
-    Blocks until window is closed, then terminates server if provided."""
+    """Open native webview window in a subprocess (macOS can't mix tkinter + Cocoa).
+    Blocks until the subprocess exits, then terminates server if provided."""
+    # pywebview must run in its own process — macOS NSApplication can't restart
+    # after tkinter's event loop exits in the same process.
+    _webview_script = f'''
+import sys
+try:
+    import webview
+    w = webview.create_window("Coupled Manifold", "{url}",
+                              width=1200, height=860, min_size=(800, 600))
     try:
-        import webview
-        window = webview.create_window(
-            "Coupled Manifold",
-            url,
-            width=1200,
-            height=860,
-            min_size=(800, 600),
+        webview.start(easy_drag=False)
+    except TypeError:
+        webview.start()
+except ImportError:
+    import subprocess
+    subprocess.Popen(["open", "{url}"])
+except Exception as e:
+    print(f"webview error: {{e}}", file=sys.stderr)
+    import subprocess
+    subprocess.Popen(["open", "{url}"])
+'''
+    try:
+        wv_proc = subprocess.Popen(
+            [PY, "-c", _webview_script],
+            cwd=DIR,
         )
-        webview.start(easy_drag=False)  # blocks until window closed
-    except ImportError:
-        # pywebview not available — fall back to open command (Safari, not Chrome)
+        wv_proc.wait()  # blocks until webview window is closed
+    except Exception:
         subprocess.Popen(["open", url])
         return
+
     # Window closed — stop server
     if server_proc:
         try:
