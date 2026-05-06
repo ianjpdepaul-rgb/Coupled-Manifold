@@ -53,7 +53,7 @@ class ContextBudget:
                 "search":        1500 if has_search else 0,
                 "history":       1200,
                 "identity":      200,
-                "interoception": 200,
+                "interoception": 350,
             }
         elif any(w in q for w in ["you know", "remember", "told you",
                                    "my ", "i am", "about me"]):
@@ -62,7 +62,7 @@ class ContextBudget:
                 "history":       3000,
                 "corpus":        600,
                 "search":        0,
-                "interoception": 200,
+                "interoception": 350,
             }
         elif has_search:
             budget = {
@@ -70,14 +70,14 @@ class ContextBudget:
                 "history":       1200,
                 "corpus":        0,
                 "identity":      200,
-                "interoception": 200,
+                "interoception": 350,
             }
         else:
             budget = {
                 "history":       2500,
                 "corpus":        800 if has_corpus else 0,
                 "identity":      300,
-                "interoception": 300,
+                "interoception": 450,
                 "search":        0,
             }
 
