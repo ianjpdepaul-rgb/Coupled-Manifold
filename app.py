@@ -4749,18 +4749,15 @@ plt.tight_layout()
     # Tool dispatch instructions — only inject when query might actually use tools
     # Saves ~80 tokens on pure conversational/analytical turns
     _q_lower_tools = user_msg.lower()
-    _needs_tools = (
-        "?" in user_msg
-        or any(w in _q_lower_tools for w in [
-            "search", "find", "look up", "run ", "calculate", "compute",
-            "what is", "who is", "when did", "latest", "current", "today",
-            "show me", "fetch", "get ", "execute", "code",
-            "graph", "plot", "chart", "visuali", "cluster", "k-means", "kmeans",
-            "analyze", "analyse", "correlation", "histogram", "scatter",
-            "test graph", "draw", "generate", "make a", "create a", "build a",
-            "dataframe", "dataset", "regression", "predict", "train", "csv",
-        ])
-    )
+    _needs_tools = any(w in _q_lower_tools for w in [
+        "search", "find", "look up", "run ", "calculate", "compute",
+        "what is", "who is", "when did", "latest", "current", "today",
+        "show me", "fetch", "get ", "execute", "code",
+        "graph", "plot", "chart", "visuali", "cluster", "k-means", "kmeans",
+        "analyze", "analyse", "correlation", "histogram", "scatter",
+        "test graph", "draw", "generate", "make a", "create a", "build a",
+        "dataframe", "dataset", "regression", "predict", "train", "csv",
+    ])
     _tool_sys = _TOOL_SYSTEM if _needs_tools else "Respond in the same language the user is writing in. Default to English if unclear."
     _full_sys = (_sys_content + "\n\n" + _tool_sys) if _sys_content else _tool_sys
     # Stage 2: append model-authored session additions

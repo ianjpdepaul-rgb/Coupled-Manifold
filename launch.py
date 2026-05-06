@@ -75,7 +75,7 @@ def _open_app_window(url="http://localhost:7860", server_proc=None):
             height=860,
             min_size=(800, 600),
         )
-        webview.start()  # blocks until window closed
+        webview.start(easy_drag=False)  # blocks until window closed
     except ImportError:
         # pywebview not available — fall back to open command (Safari, not Chrome)
         subprocess.Popen(["open", url])
