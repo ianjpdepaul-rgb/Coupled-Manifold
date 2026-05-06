@@ -63,22 +63,33 @@ def mem_summary() -> str:
         return ""
 
 
-def _open_app_window(url="http://localhost:7860"):
-    """Open URL in a standalone Chrome app window (no tabs, no address bar).
-    Falls back to default browser if Chrome not found."""
-    chrome_paths = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    ]
-    for path in chrome_paths:
-        if os.path.isfile(path):
-            subprocess.Popen([path, f"--app={url}"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-    # Fallback: macOS open command
-    import webbrowser
-    webbrowser.open(url)
+def _open_app_window(url="http://localhost:7860", server_proc=None):
+    """Open native webview window (macOS WebKit — no browser).
+    Blocks until window is closed, then terminates server if provided."""
+    try:
+        import webview
+        window = webview.create_window(
+            "Coupled Manifold",
+            url,
+            width=1200,
+            height=860,
+            min_size=(800, 600),
+        )
+        webview.start()  # blocks until window closed
+    except ImportError:
+        # pywebview not available — fall back to open command (Safari, not Chrome)
+        subprocess.Popen(["open", url])
+        return
+    # Window closed — stop server
+    if server_proc:
+        try:
+            server_proc.terminate()
+            server_proc.wait(timeout=4)
+        except Exception:
+            try:
+                server_proc.kill()
+            except Exception:
+                pass
 
 
 def _find_server_pid(port=7860):
@@ -125,6 +136,7 @@ class App(tk.Tk):
         self.configure(bg=BG)
         self.resizable(True, True)
         self._server_proc = None
+        self._ready_for_webview = False
 
         # ttk style — darken progressbar
         s = ttk.Style(self)
@@ -238,11 +250,11 @@ class App(tk.Tk):
         )
         self._stop_btn.pack(side=tk.LEFT)
 
-        # If server is already running, switch Launch to Open Browser
+        # If server is already running, go straight to webview
         if self._orphan_pid:
             self._launch_btn.config(
                 text="Open App",
-                command=lambda: _open_app_window(),
+                command=self._open_webview,
             )
 
         # Utility row — data folder, settings, memory stats
@@ -375,13 +387,10 @@ class App(tk.Tk):
             def _up():
                 self._pbar.stop()
                 if ready:
-                    self._status.config(text="Running at localhost:7860", fg=GREEN)
-                    self._launch_btn.config(
-                        text="Open App", state=tk.NORMAL,
-                        command=lambda: _open_app_window(),
-                    )
-                    self._stop_btn.config(state=tk.NORMAL)
-                    _open_app_window()
+                    self._status.config(text="Running — opening app…", fg=GREEN)
+                    # Transition: close tkinter, open native webview
+                    self._ready_for_webview = True
+                    self.after(200, self.destroy)
                 else:
                     self._status.config(text="Server didn't start — check console", fg=RED)
                     self._launch_btn.config(text="Retry", state=tk.NORMAL,
@@ -389,6 +398,11 @@ class App(tk.Tk):
             self.after(0, _up)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _open_webview(self):
+        """Transition from tkinter to native webview window."""
+        self._ready_for_webview = True
+        self.after(200, self.destroy)
 
     def _do_stop(self):
         if self._server_proc:
@@ -887,7 +901,7 @@ class App(tk.Tk):
                  font=("SF Pro Display", 22, "bold"), bg=BG, fg=GREEN).pack(pady=(40, 8))
         tk.Label(self._area,
                  text="Double-click Graceful.app any time to launch.\n"
-                      "The browser opens automatically once the model loads.",
+                      "The app opens automatically once the model loads.",
                  font=("SF Pro Display", 13), bg=BG, fg=FG2,
                  justify=tk.CENTER).pack(pady=(0, 32))
         tk.Button(
@@ -988,6 +1002,7 @@ class App(tk.Tk):
         if _running:
             if messagebox.askokcancel("Quit",
                                       "This will stop the Coupled Manifold server. Quit?"):
+                self._ready_for_webview = False  # don't open webview on user-quit
                 self._do_stop()
                 self.destroy()
         else:
@@ -997,3 +1012,11 @@ class App(tk.Tk):
 if __name__ == "__main__":
     app = App()
     app.mainloop()
+
+    # After tkinter exits — if server is ready, open native webview
+    if getattr(app, "_ready_for_webview", False) and app._server_proc:
+        _open_app_window("http://localhost:7860", server_proc=app._server_proc)
+    elif getattr(app, "_ready_for_webview", False):
+        # Orphan server case — just open webview, stop on close
+        _open_app_window("http://localhost:7860")
+        _kill_port_server()

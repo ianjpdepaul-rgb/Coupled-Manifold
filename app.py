@@ -30,6 +30,13 @@ from graceful import coupled_trace as _coupled_trace
 from graceful import framework_confidence as _framework_conf
 from graceful.interoception import build_apparatus_block as _build_apparatus_block
 from graceful.system_profile import SystemProfile as _SystemProfile
+from graceful.tool_registry import ToolRegistry, TOOL_PENDING
+from graceful.tools import (
+    audit_recent, read_session, take_note, check_disagreement, calculate,
+    make_adjust_sampling, make_pin_context, make_update_system_prompt,
+    make_mark_disagreement, make_save_to_long_term,
+)
+from graceful.modifications import ModificationTracker
 from graceful.python_executor import (
     execute_python, run_plot as _run_plot, run_calc as _run_calc,
     code_ns as _code_ns, reset_code_namespace, STATS_RE as _STATS_RE,
@@ -1709,6 +1716,179 @@ def build_interoceptive_block():
 load_latest_checkpoint()
 load_cumulative_weights()
 mem = Memory(DATA_DIR)
+
+# ── Tool Registry (Agentic Stage 1) ──────────────────────────────────────────
+os.environ["GRACEFUL_DATA"] = DATA_DIR  # ensure graceful.tools resolves same dir
+_registry = ToolRegistry(log_dir=f"{DATA_DIR}/logs", data_dir=DATA_DIR)
+
+def _tool_search(arg: str) -> tuple[str, str]:
+    _res = search_web(arg.strip())
+    return (format_results(_res) if _res else "No results found.", "")
+
+def _tool_find(arg: str) -> tuple[str, str]:
+    _chunks = mem.corpus.search(arg.strip(), k=3)
+    if not _chunks:
+        return ("No relevant documents in corpus.", "")
+    return ("\n\n".join(
+        f"[{c.get('source','?')}]: {c.get('text','')[:300]}"
+        for c in _chunks
+    ), "")
+
+def _tool_run(arg: str) -> tuple[str, str]:
+    _code = arg.strip()
+    _code = re.sub(r'^```(?:python|py)?\n', '', _code)
+    _code = re.sub(r'\n?```\s*$', '', _code)
+    _text, _html = execute_python(_code.strip())
+    return (_text or "(no output)", _html)
+
+def _tool_fetch(arg: str) -> tuple[str, str]:
+    import httpx
+    from html.parser import HTMLParser
+    _r = httpx.get(arg.strip(), timeout=8.0, follow_redirects=True)
+    class _S(HTMLParser):
+        def __init__(self): super().__init__(); self.p = []
+        def handle_data(self, d): self.p.append(d)
+    _p = _S(); _p.feed(_r.text)
+    return (" ".join(_p.p)[:2000], "")
+
+def _tool_think(arg: str) -> tuple[str, str]:
+    return ("[Internal reasoning recorded]", "")
+
+def _tool_adjust_thresholds(arg: str) -> tuple[str, str]:
+    try:
+        _parsed = json.loads(arg)
+        _low = int(_parsed.get("low", -100))
+        _high = int(_parsed.get("high", 6))
+        _reason = str(_parsed.get("reason", "unspecified"))
+        _result = ctrl.set_thresholds(_low, _high, _reason)
+        try:
+            _log_path = f"{DATA_DIR}/logs/thresholds_changes.jsonl"
+            os.makedirs(os.path.dirname(_log_path), exist_ok=True)
+            _log_entry = {"turn_id": turn_count[0], **_result}
+            with open(_log_path, "a") as _lf:
+                _lf.write(json.dumps(_log_entry, default=str) + "\n")
+        except Exception:
+            pass
+        if _result.get("applied"):
+            return (f"Thresholds adjusted: low={_result['new_low']} high={_result['new_high']} — {_reason}", "")
+        else:
+            return (f"Threshold adjustment queued (deferred: {_result.get('defer_reason', '?')}). Will apply when geometry recovers.", "")
+    except (json.JSONDecodeError, ValueError, TypeError) as _parse_e:
+        return (f"adjust_thresholds: invalid JSON — {_parse_e}", "")
+
+# Permission levels: auto (free), prompt (user confirms), explicit (user must ask)
+_registry.register("search", _tool_search,
+                   description="current events, facts, people",
+                   usage_example="query", permission="auto")
+_registry.register("find", _tool_find,
+                   description="search the user's indexed documents",
+                   usage_example="query", permission="auto")
+_registry.register("run", _tool_run,
+                   description="execute Python, math, data",
+                   usage_example="python code", permission="prompt")
+_registry.register("fetch", _tool_fetch,
+                   description="fetch and extract text from a URL",
+                   usage_example="https://example.com", permission="prompt")
+_registry.register("think", _tool_think,
+                   description="private scratchpad (not shown)",
+                   usage_example="reasoning", permission="auto")
+_registry.register("calculate", calculate,
+                   description="evaluate math symbolically (SymPy)",
+                   usage_example="integrate(x**2, x)", permission="auto")
+_registry.register("adjust_thresholds", _tool_adjust_thresholds,
+                   description="adjust your own SnobLine routing thresholds",
+                   usage_example='{"low": -120, "high": 8, "reason": "..."}',
+                   permission="auto")
+_registry.register("audit_recent", audit_recent,
+                   description="review recent tool usage log",
+                   usage_example="10", permission="auto")
+_registry.register("read_session", read_session,
+                   description="show session metadata (turns, model, thresholds)",
+                   usage_example="", permission="auto")
+_registry.register("take_note", take_note,
+                   description="save a note for cross-turn memory",
+                   usage_example="user prefers concise answers", permission="auto")
+_registry.register("check_disagreement", check_disagreement,
+                   description="show framework disagreement signals and confidence",
+                   usage_example="", permission="auto")
+
+# ── Stage 2: Self-modification tools ─────────────────────────────────────────
+_mod_tracker = ModificationTracker(DATA_DIR)
+
+def _get_sampling_state():
+    return {"temperature": temp_override[0] or _last_sampling[0],
+            "top_p": _last_sampling[1], "top_k": 0}
+
+def _set_sampling_state(t, p, k):
+    temp_override[0] = t
+    _last_sampling[1] = p
+    # top_k not currently used in generation but stored for future
+
+def _get_pins():
+    with _pinned_context_lock:
+        return [p["text"] for p in _pinned_context]
+
+def _add_pin(text):
+    with _pinned_context_lock:
+        _pinned_context.append({"text": text, "ts": time.time(), "turn": turn_count[0]})
+        if len(_pinned_context) > 50:
+            _pinned_context[:] = _pinned_context[-50:]
+
+def _get_sys_additions():
+    return list(_sys_prompt_additions)
+
+def _add_sys_addition(text):
+    _sys_prompt_additions.append(text)
+
+def _get_disagreements():
+    return list(_model_disagreements)
+
+def _add_disagreement(entry):
+    _model_disagreements.append(entry)
+    # Persist to disk
+    try:
+        path = os.path.join(DATA_DIR, "logs", "disagreements.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except Exception:
+        pass
+
+def _save_long_term(text, category):
+    """Save to model_notes with category tag."""
+    notes_path = os.path.join(DATA_DIR, "logs", "model_notes.jsonl")
+    os.makedirs(os.path.dirname(notes_path), exist_ok=True)
+    entry = {"ts": time.time(), "note": text, "category": category, "persistent": True}
+    with open(notes_path, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
+
+_registry.register("adjust_sampling",
+                   make_adjust_sampling(_get_sampling_state, _set_sampling_state, _mod_tracker),
+                   description="adjust temperature/top_p/top_k with reason",
+                   usage_example='{"temperature": 0.5, "reason": "user wants more focused answers"}',
+                   permission="explicit")
+_registry.register("pin_context",
+                   make_pin_context(_get_pins, _add_pin, _mod_tracker),
+                   description="pin text to context for this session",
+                   usage_example='{"text": "important context", "reason": "relevant to ongoing discussion"}',
+                   permission="explicit")
+_registry.register("update_system_prompt",
+                   make_update_system_prompt(_get_sys_additions, _add_sys_addition, _mod_tracker),
+                   description="append to system prompt for current session",
+                   usage_example='{"addition": "be more concise", "reason": "user prefers brevity"}',
+                   permission="explicit")
+_registry.register("mark_disagreement",
+                   make_mark_disagreement(_get_disagreements, _add_disagreement, _mod_tracker),
+                   description="record a disagreement with stated reason",
+                   usage_example='{"topic": "X", "user_position": "Y", "prior_position": "Z", "reason": "..."}',
+                   permission="explicit")
+_registry.register("save_to_long_term",
+                   make_save_to_long_term(_save_long_term, _mod_tracker),
+                   description="promote text to persistent long-term memory",
+                   usage_example='{"text": "...", "category": "preference", "reason": "..."}',
+                   permission="explicit")
+# ──────────────────────────────────────────────────────────────────────────────
+
 startup_history = mem.get_history_messages()
 print(f"  SnobLine: {len(ctrl.history)} trace entries | Mode: {ctrl.mode}")
 st = mem.status()
@@ -1840,6 +2020,8 @@ def speak(text: str, voice: str = "Samantha", rate: int = 200):
 
 _pinned_context: list = []   # user-pinned text blocks, injected every turn
 _pinned_context_lock = threading.Lock()
+_sys_prompt_additions: list[str] = []  # Stage 2: model-appended session-scoped additions
+_model_disagreements: list[dict] = []  # Stage 2: model-noted disagreements (persistent)
 
 
 # ═══════════════════════════════════════════════════
@@ -1905,97 +2087,22 @@ _TOOL_RE        = re.compile(r'<tool:(\w+)>(.*?)</tool:\1>', re.DOTALL)
 _TOOL_OPEN_RE   = re.compile(r'<tool:(\w+)>([^<]{3,})')  # open-ended (no closing tag)
 _MAX_TOOL_CALLS = 3
 
-_TOOL_SYSTEM = (
-    "Respond in the same language the user is writing in. Default to English if unclear. "
-    "You have tools. Emit a tag on its own line to use one:\n"
-    "<tool:search>query</tool:search>  — current events, facts, people\n"
-    "<tool:find>query</tool:find>      — search the user's indexed documents\n"
-    "<tool:run>python code</tool:run>  — execute Python, math, data\n"
-    "<tool:think>reasoning</tool:think> — private scratchpad (not shown)\n"
-    "After a tool tag, STOP. Results are injected. Incorporate them naturally. "
-    "<tool:adjust_thresholds>{\"low\": -120, \"high\": 8, \"reason\": \"...\"}</tool:adjust_thresholds> — adjust your own SnobLine routing thresholds\n"
-    "Max 3 tool calls per reply. Never mention tool use to the user.\n\n"
-    "MATH AND CODE RULE: When asked to compute, plot, graph, or write code — act immediately.\n"
-    "Pick reasonable defaults (k=3, 2D, 200 points, etc). NEVER ask for clarification — just do it.\n"
-    "Use <tool:run> for Python. After the tag, STOP — don't write anything else.\n"
-    "If the user asks how you made something or to explain your code, describe the code you ran in plain text — do NOT re-run it.\n\n"
-    "Example — user: 'plot a sine wave'\n"
-    "You respond:\n"
-    "<tool:run>\n"
-    "import numpy as np\n"
-    "import matplotlib.pyplot as plt\n"
-    "x = np.linspace(0, 4*np.pi, 400)\n"
-    "plt.figure(figsize=(8,3))\n"
-    "plt.plot(x, np.sin(x), color='#f03468')\n"
-    "plt.title('Sine Wave'); plt.tight_layout(); plt.savefig('/tmp/plot.png', dpi=120)\n"
-    "print('done')\n"
-    "</tool:run>\n\n"
-    "For pure math with no code needed: use LaTeX inline ($x^2 + 1$) or display ($$\\int_0^1 x\\,dx = \\frac{1}{2}$$)."
-)
+_TOOL_SYSTEM = _registry.tool_prompt()
 
 
-def execute_tool(name: str, arg: str) -> tuple[str, str]:
-    """Execute a model-requested tool call.
+def execute_tool(name: str, arg: str, *, user_requested: bool = False) -> tuple[str, str]:
+    """Execute a model-requested tool call via registry dispatch.
     Returns (text_result, html_blob). html_blob is non-empty only for 'run'.
+
+    For prompt-level tools: auto-confirms during generation loop.
+    (UI confirmation will be added in Stage 1B.)
     """
-    try:
-        if name == "search":
-            _res = search_web(arg.strip())
-            return (format_results(_res) if _res else "No results found.", "")
-        elif name == "find":
-            _chunks = mem.corpus.search(arg.strip(), k=3)
-            if not _chunks:
-                return ("No relevant documents in corpus.", "")
-            return ("\n\n".join(
-                f"[{c.get('source','?')}]: {c.get('text','')[:300]}"
-                for c in _chunks
-            ), "")
-        elif name == "run":
-            _code = arg.strip()
-            # Strip markdown fences the model sometimes wraps inside <tool:run>
-            _code = re.sub(r'^```(?:python|py)?\n', '', _code)
-            _code = re.sub(r'\n?```\s*$', '', _code)
-            _text, _html = execute_python(_code.strip())
-            return (_text or "(no output)", _html)
-        elif name == "fetch":
-            import httpx
-            from html.parser import HTMLParser
-            _r = httpx.get(arg.strip(), timeout=8.0, follow_redirects=True)
-            class _S(HTMLParser):
-                def __init__(self): super().__init__(); self.p = []
-                def handle_data(self, d): self.p.append(d)
-            _p = _S(); _p.feed(_r.text)
-            return (" ".join(_p.p)[:2000], "")
-        elif name == "think":
-            return ("[Internal reasoning recorded]", "")
-        elif name == "adjust_thresholds":
-            try:
-                _parsed = json.loads(arg)
-                _low = int(_parsed.get("low", -100))
-                _high = int(_parsed.get("high", 6))
-                _reason = str(_parsed.get("reason", "unspecified"))
-                _result = ctrl.set_thresholds(_low, _high, _reason)
-                # Log to disk
-                try:
-                    _log_path = f"{DATA_DIR}/logs/thresholds_changes.jsonl"
-                    os.makedirs(os.path.dirname(_log_path), exist_ok=True)
-                    _log_entry = {
-                        "turn_id": turn_count[0],
-                        **_result,
-                    }
-                    with open(_log_path, "a") as _lf:
-                        _lf.write(json.dumps(_log_entry, default=str) + "\n")
-                except Exception:
-                    pass
-                if _result.get("applied"):
-                    return (f"Thresholds adjusted: low={_result['new_low']} high={_result['new_high']} — {_reason}", "")
-                else:
-                    return (f"Threshold adjustment queued (deferred: {_result.get('defer_reason', '?')}). Will apply when geometry recovers.", "")
-            except (json.JSONDecodeError, ValueError, TypeError) as _parse_e:
-                return (f"adjust_thresholds: invalid JSON — {_parse_e}", "")
-    except Exception as _e:
-        return (f"Tool error ({name}): {_e}", "")
-    return (f"Unknown tool: {name}", "")
+    result, html = _registry.dispatch(
+        name, arg, turn_id=turn_count[0],
+        user_requested=user_requested,
+        user_confirmed=True,  # auto-confirm until UI is wired (1B)
+    )
+    return (result, html)
 
 
 def _self_correct(response: str, user_msg: str, messages_ctx: list,
@@ -2134,6 +2241,42 @@ def _run_experiment_streaming():
 
 
 # ═══════════════════════════════════════════════════
+# UNDO REVERT HELPER
+# ═══════════════════════════════════════════════════
+
+def _apply_revert(mod: dict) -> str:
+    """Actually revert state for a modification. Returns description string."""
+    tool = mod["tool"]
+    before = mod["before"]
+    scope = mod.get("scope", "session")
+
+    if tool == "adjust_sampling" and isinstance(before, dict):
+        temp_override[0] = before.get("temperature", 0.0)
+        _last_sampling[1] = before.get("top_p", 0.95)
+        return f"Reverted {tool} → t={before.get('temperature')} p={before.get('top_p')}"
+
+    elif tool == "pin_context" and isinstance(before, list):
+        with _pinned_context_lock:
+            _pinned_context[:] = [{"text": t, "ts": time.time(), "turn": turn_count[0]} for t in before]
+        return f"Reverted {tool} → {len(before)} pin(s)"
+
+    elif tool == "update_system_prompt" and isinstance(before, list):
+        _sys_prompt_additions[:] = before
+        return f"Reverted {tool} → {len(before)} addition(s)"
+
+    elif tool == "mark_disagreement" and isinstance(before, list):
+        _model_disagreements[:] = before
+        return f"Reverted {tool} — in-memory disagreements restored (disk log annotated, not erased)"
+
+    elif tool == "save_to_long_term":
+        # Cannot un-write from disk; mark it honestly
+        return f"Reverted {tool} — marked reverted in log (original note remains on disk for audit)"
+
+    else:
+        return f"Reverted {tool} (state handler not implemented — logged only)"
+
+
+# ═══════════════════════════════════════════════════
 # CHAT
 # ═══════════════════════════════════════════════════
 
@@ -2237,6 +2380,9 @@ def chat(user_msg, history):
             "| `/thread <topic>` | Resume the last conversation about a topic |\n"
             "| `/zettelkasten` | Export session as Zettelkasten atomic notes (saves to file) |\n"
             "| `/continue` | Resume a response that was cut short |\n"
+            "| `/undo` | Revert most recent model self-modification |\n"
+            "| `/undo session` | Revert all modifications this session |\n"
+            "| `/modifications` | List active model modifications |\n"
             "| `/help` | This message |\n\n"
             "**Keyboard** — `⌘↩` send · `⌘K` clear · `⌘/` open command menu"
         )
@@ -2821,6 +2967,51 @@ def chat(user_msg, history):
                 reply = "\n".join(lines)
             else:
                 reply = "No pins yet. Use `/pin <text>` to pin something."
+        history = list(history or [])
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        yield "", history
+        return
+
+    # /undo — revert most recent model self-modification
+    if user_msg.strip().lower() == "/undo":
+        mod = _mod_tracker.undo_last()
+        if mod:
+            reply = _apply_revert(mod)
+        else:
+            reply = "Nothing to undo — no active modifications this session."
+        history = list(history or [])
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        yield "", history
+        return
+
+    # /undo session — revert all session modifications
+    if user_msg.strip().lower() == "/undo session":
+        reverted = _mod_tracker.undo_session()
+        if reverted:
+            lines = []
+            for mod in reverted:
+                lines.append(_apply_revert(mod))
+            reply = f"**Reverted {len(reverted)} modification(s):**\n" + "\n".join(f"• {l}" for l in lines)
+        else:
+            reply = "No modifications to revert this session."
+        history = list(history or [])
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        yield "", history
+        return
+
+    # /modifications — list active modifications
+    if user_msg.strip().lower() == "/modifications":
+        mods = _mod_tracker.list_modifications("session")
+        if mods:
+            lines = ["**Active modifications this session:**\n"]
+            for m in mods:
+                lines.append(f"• **{m['tool']}** — {m['reason']}")
+            reply = "\n".join(lines)
+        else:
+            reply = "No active modifications this session."
         history = list(history or [])
         history.append({"role": "user", "content": user_msg})
         history.append({"role": "assistant", "content": reply})
@@ -4333,7 +4524,7 @@ plt.tight_layout()
             "/evolve","/thread","/continue","/knowledge","/backup",
             "/zettelkasten","/help","/counterpoint","/flashcards","/contradict",
             "/abstract","/quiz","/glossary","/week","/brief","/dream","/reading",
-            "/data",
+            "/data","/undo","/modifications",
         }
         if _cmd_word not in _known_cmds:
             _err_reply = f"Unknown command `{_cmd_word}`. Type / for the command list."
@@ -4572,6 +4763,9 @@ plt.tight_layout()
     )
     _tool_sys = _TOOL_SYSTEM if _needs_tools else "Respond in the same language the user is writing in. Default to English if unclear."
     _full_sys = (_sys_content + "\n\n" + _tool_sys) if _sys_content else _tool_sys
+    # Stage 2: append model-authored session additions
+    if _sys_prompt_additions:
+        _full_sys += "\n\n" + "\n".join(_sys_prompt_additions)
     # Stamp current date/time so the model can answer temporal questions accurately
     _now_str  = datetime.datetime.now().strftime("%A, %B %d, %Y at %H:%M")
     _full_sys = f"[Current date and time: {_now_str}]\n\n" + _full_sys

@@ -27,3 +27,4 @@ statsmodels
 scikit-learn
 ebooklib
 pytesseract
+pywebview
