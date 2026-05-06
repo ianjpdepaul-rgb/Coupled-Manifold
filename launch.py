@@ -153,6 +153,7 @@ class App(tk.Tk):
         self.resizable(True, True)
         self._server_proc = None
         self._ready_for_webview = False
+        self._shutting_down = False
 
         # ttk style — darken progressbar
         s = ttk.Style(self)
@@ -381,14 +382,21 @@ class App(tk.Tk):
 
             # Stream output to console
             def _stream():
-                for line in self._server_proc.stdout:
-                    if line.strip():
-                        self._cwrite(line)
+                try:
+                    for line in self._server_proc.stdout:
+                        if self._shutting_down:
+                            break
+                        if line.strip():
+                            self._cwrite(line)
+                except Exception:
+                    pass
             threading.Thread(target=_stream, daemon=True).start()
 
             # Poll until port 7860 is open — up to 30 min for slow connections
             ready = False
             for _ in range(900):   # 900 × 2s = 30 minutes
+                if self._shutting_down:
+                    break
                 time.sleep(2)
                 try:
                     c = socket.create_connection(("127.0.0.1", 7860), timeout=1)
@@ -400,7 +408,12 @@ class App(tk.Tk):
 
             self._dl_done.set()   # stop download monitor
 
+            if self._shutting_down:
+                return  # user closed window during startup — don't touch UI
+
             def _up():
+                if self._shutting_down:
+                    return
                 self._pbar.stop()
                 if ready:
                     self._status.config(text="Running — opening app…", fg=GREEN)
@@ -424,22 +437,26 @@ class App(tk.Tk):
         if self._server_proc:
             try:
                 self._server_proc.terminate()   # SIGTERM → triggers _shutdown_save
-                self._server_proc.wait(timeout=4)
+                self._server_proc.wait(timeout=5)
             except Exception:
                 try:
                     self._server_proc.kill()
                 except Exception:
                     pass
             self._server_proc = None
-        else:
-            # No subprocess handle — kill whatever's on the port (orphaned server)
-            _kill_port_server()
+        # Always try port kill as fallback (catches orphans and stubborn processes)
+        _kill_port_server()
         self._orphan_pid = None
-        self._pbar.stop()
-        self._stop_btn.config(state=tk.DISABLED)
-        self._launch_btn.config(text="Launch  →", state=tk.NORMAL,
-                                command=self._do_launch)
-        self._status.config(text="Stopped.", fg=FG2)
+        if hasattr(self, "_dl_done"):
+            self._dl_done.set()
+        try:
+            self._pbar.stop()
+            self._stop_btn.config(state=tk.DISABLED)
+            self._launch_btn.config(text="Launch  →", state=tk.NORMAL,
+                                    command=self._do_launch)
+            self._status.config(text="Stopped.", fg=FG2)
+        except Exception:
+            pass  # UI might already be destroyed
 
     # ══════════════════════════════════════════════════════════════════════
     # SETUP WIZARD  (first run)
@@ -1016,13 +1033,38 @@ class App(tk.Tk):
     def _on_close(self):
         _running = self._server_proc or _find_server_pid()
         if _running:
-            if messagebox.askokcancel("Quit",
-                                      "This will stop the Coupled Manifold server. Quit?"):
-                self._ready_for_webview = False  # don't open webview on user-quit
-                self._do_stop()
-                self.destroy()
+            if messagebox.askokcancel(
+                "Quit",
+                "This will stop the Coupled Manifold server.\n"
+                "The session will be saved before shutdown.\n\nQuit?"):
+                self._shutdown()
         else:
+            self._shutdown()
+
+    def _shutdown(self):
+        """Clean shutdown — stop server, cancel bg threads, destroy window."""
+        self._shutting_down = True
+        self._ready_for_webview = False
+        # Stop the server
+        if self._server_proc:
+            try:
+                self._server_proc.terminate()
+                self._server_proc.wait(timeout=5)
+            except Exception:
+                try:
+                    self._server_proc.kill()
+                except Exception:
+                    pass
+            self._server_proc = None
+        # Kill anything still on the port
+        _kill_port_server()
+        # Signal download monitor to stop
+        if hasattr(self, "_dl_done"):
+            self._dl_done.set()
+        try:
             self.destroy()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
@@ -1030,7 +1072,10 @@ if __name__ == "__main__":
     app.mainloop()
 
     # After tkinter exits — if server is ready, open native webview
-    if getattr(app, "_ready_for_webview", False) and app._server_proc:
+    if getattr(app, "_shutting_down", False):
+        # User explicitly quit — don't open webview, everything is cleaned up
+        pass
+    elif getattr(app, "_ready_for_webview", False) and app._server_proc:
         _open_app_window("http://localhost:7860", server_proc=app._server_proc)
     elif getattr(app, "_ready_for_webview", False):
         # Orphan server case — just open webview, stop on close
