@@ -7618,22 +7618,33 @@ async def api_knowledge_graph():
             if _term.lower() in _text:
                 _conv_w[_term] = _conv_w.get(_term, 0) + 1
 
-    # Normalize each source to [0, 1] range, then combine
-    _max_corpus = max(_corpus_w.values()) if _corpus_w else 1
-    _max_conv = max(_conv_w.values()) if _conv_w else 1
+    # Fallback: if source-specific weights not yet populated (pre-existing install),
+    # use legacy node_weights directly with session layering
+    _use_legacy = not _corpus_w and not _conv_w
+    _legacy_nw = dict(mem.identity.data.get("node_weights", {}))
 
-    def _blended_weight(term):
-        cw = _corpus_w.get(term, 0) / max(_max_corpus, 1)
-        vw = _conv_w.get(term, 0) / max(_max_conv, 1)
-        # Conversation weighted 3x higher than corpus
-        blended = 0.25 * cw + 0.75 * vw
-        # Scale to usable range [1, 20] for D3 rendering
-        return max(1, round(blended * 20))
+    if _use_legacy:
+        # Legacy path: use node_weights + session mentions (original behavior but with fixes)
+        for _t in session_log[-50:]:
+            _text = (_t.get("user", "") + " " + _t.get("response", "")).lower()
+            for _term in _all_terms:
+                if _term.lower() in _text:
+                    _legacy_nw[_term] = _legacy_nw.get(_term, 0) + 1
+        _max_legacy = max(_legacy_nw.values()) if _legacy_nw else 1
+        _node_weight = {t: max(1, round((_legacy_nw.get(t, 0) / max(_max_legacy, 1)) * 20))
+                        for t in _all_terms}
+    else:
+        # New path: blend corpus + conversation with conversation weighted higher
+        _max_corpus = max(_corpus_w.values()) if _corpus_w else 1
+        _max_conv = max(_conv_w.values()) if _conv_w else 1
 
-    # Threshold lowered from >= 2 to >= 1 — all mentioned nodes appear
-    _node_weight = {}
-    for t in _all_terms:
-        _node_weight[t] = _blended_weight(t)
+        def _blended_weight(term):
+            cw = _corpus_w.get(term, 0) / max(_max_corpus, 1)
+            vw = _conv_w.get(term, 0) / max(_max_conv, 1)
+            blended = 0.25 * cw + 0.75 * vw
+            return max(1, round(blended * 20))
+
+        _node_weight = {t: _blended_weight(t) for t in _all_terms}
 
     nodes = [{"id": t, "label": t, "weight": _node_weight.get(t, 1)}
              for t in _all_terms if _node_weight.get(t, 0) >= 1]
