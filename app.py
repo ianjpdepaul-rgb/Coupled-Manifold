@@ -36,6 +36,28 @@ from graceful.tools import (
     make_adjust_sampling, make_pin_context, make_update_system_prompt,
     make_mark_disagreement, make_save_to_long_term,
 )
+from graceful.workflow_tools import (
+    read_file as _wf_read_file,
+    write_draft as _wf_write_draft,
+    list_directory as _wf_list_directory,
+    shell_readonly as _wf_shell_readonly,
+    init_project_root as _wf_init_project_root,
+    fetch_url as _wf_fetch_url,
+    analyze_screenshot as _wf_analyze_screenshot,
+    search_my_history as _wf_search_history,
+    query_knowledge_graph as _wf_query_kg,
+    set_reminder as _wf_set_reminder,
+    draft_email as _wf_draft_email,
+)
+from graceful.temporal_awareness import TemporalAwareness
+from graceful.proactive import ProactiveMessenger
+from graceful.consolidation import ConsolidationOrchestrator
+from graceful.human_profile import HumanProfile
+from graceful.ocean_profile import OceanProfile, score_text, score_text_smart, score_from_signals, compute_dance_coherence
+from graceful.mood import classify_mood, MoodTracker
+from graceful.confidence import ConfidenceTracker
+from graceful.cross_session import CrossSessionTracker
+from graceful.latent_needs import detect_latent_needs, needs_context_string
 from graceful.modifications import ModificationTracker
 from graceful.python_executor import (
     execute_python, run_plot as _run_plot, run_calc as _run_calc,
@@ -211,6 +233,41 @@ def _shutdown_save():
         if _session_history and len(_session_history) >= 2:
             _save_session()
             print("  💾 Session flushed on exit")
+    except Exception:
+        pass
+    # Save temporal state and stop proactive messenger
+    try:
+        _temporal.record_session_end()
+        _temporal.stop()
+    except Exception:
+        pass
+    try:
+        _proactive.stop()
+    except Exception:
+        pass
+    # Save human profile + OCEAN + confidence
+    try:
+        _human_profile.save()
+        _ocean_user.save()
+        _ocean_model.save()
+        _confidence_tracker.save()
+    except Exception:
+        pass
+    # Cross-session pattern recording
+    try:
+        import __main__ as _cm2
+        _sl2 = getattr(_cm2, "session_log", [])
+        if _sl2:
+            _cross_session.record_session(_sl2)
+    except Exception:
+        pass
+    # Run session-end consolidation and stop idle monitor
+    try:
+        import __main__ as _cm
+        _sl = getattr(_cm, "session_log", [])
+        if _sl:
+            _consolidator.on_session_end(_sl)
+        _consolidator.stop()
     except Exception:
         pass
     try:
@@ -1686,14 +1743,110 @@ def build_interoceptive_block():
             "Thresholds adjustable via <tool:adjust_thresholds>."
         )
 
+    # Temporal context — P2.5 (between apparatus and system profile)
+    _temporal_ctx = ""
+    try:
+        _tc = _temporal.context_string()
+        if _tc:
+            _temporal_ctx = f"\n[TEMPORAL] {_tc}"
+    except Exception:
+        pass
+
+    # Human profile context — P2.5 (alongside temporal)
+    _human_ctx = ""
+    try:
+        _hc = _human_profile.context_string(_human_signals[0])
+        if _hc:
+            _human_ctx = f"\n{_hc}"
+    except Exception:
+        pass
+
+    # OCEAN profiles context — P3.5 (lower priority than system profile)
+    _ocean_ctx = ""
+    try:
+        _ou = _ocean_user.context_string()
+        _om = _ocean_model.context_string()
+        if _ou or _om:
+            _ocean_ctx = "\n" + " | ".join(filter(None, [_ou, _om]))
+    except Exception:
+        pass
+
+    # Mood context — P2.3
+    _mood_ctx = ""
+    try:
+        _mc = _mood_tracker.context_string()
+        if _mc:
+            _mood_ctx = f"\n{_mc}"
+    except Exception:
+        pass
+
+    # Confidence context — P2.2
+    _conf_ctx = ""
+    try:
+        _cc = _confidence_tracker.context_string()
+        if _cc:
+            _conf_ctx = f"\n{_cc}"
+    except Exception:
+        pass
+
+    # Latent needs context — P2.1
+    _latent_ctx = ""
+    try:
+        _lc = needs_context_string(_latent_needs)
+        if _lc:
+            _latent_ctx = f"\n{_lc}"
+    except Exception:
+        pass
+
+    # ── Coupling directive — maps human signals to behavioral adaptation ──
+    _coupling_ctx = ""
+    _adapt_parts = []
+    if _human_profile.emotional_valence < -0.3:
+        _adapt_parts.append("negative valence → validate before analyzing")
+    if _human_profile.urgency > 0.5:
+        _adapt_parts.append("high urgency → be direct, skip preamble")
+    if _human_profile.mode == "venting":
+        _adapt_parts.append("venting mode → acknowledge first, don't problem-solve immediately")
+    elif _human_profile.mode == "exploring":
+        _adapt_parts.append("exploring → follow their thread, expand, ask back")
+    elif _human_profile.mode == "socializing":
+        _adapt_parts.append("socializing → match energy, keep it light")
+    if _human_profile.engagement_quality < 0.2:
+        _adapt_parts.append("low engagement → check in, vary approach")
+    # Mood-based coupling
+    try:
+        _cur_mood = _mood_tracker.current_mood()
+        if _cur_mood:
+            _m = _cur_mood["mood"]
+            _mi = _cur_mood.get("intensity", 0)
+            if _m == "anxious" and _mi > 0.5:
+                _adapt_parts.append("anxious → ground, be steady, don't amplify")
+            elif _m == "frustrated" and _mi > 0.4:
+                _adapt_parts.append("frustrated → validate, then offer a concrete path forward")
+            elif _m == "curious" and _mi > 0.5:
+                _adapt_parts.append("curious → go deeper, share what's interesting about this")
+            elif _m == "playful" and _mi > 0.4:
+                _adapt_parts.append("playful → match the energy, riff")
+    except Exception:
+        pass
+    if _adapt_parts:
+        _coupling_ctx = "\n[ADAPT] " + " | ".join(_adapt_parts)
+
     # Assemble with priority dropping
     _end = "\n[END INTEROCEPTIVE STATE]"
     # Start with everything, drop lowest priority first
     _sections = [
         (5, _failure_modes),
         (4, _instructions),
+        (3.5, _ocean_ctx),
         (3, _sp),
+        (2.5, _temporal_ctx),
+        (2.4, _human_ctx),
+        (2.3, _mood_ctx),
+        (2.2, _conf_ctx),
+        (2.1, _latent_ctx),
         (2, _app),
+        (1.5, _coupling_ctx),
         (1, _stab),
     ]
     # Always include core + end
@@ -1912,6 +2065,109 @@ _registry.register("save_to_long_term",
                    description="promote text to persistent long-term memory",
                    usage_example='{"text": "...", "category": "preference", "reason": "..."}',
                    permission="explicit")
+
+# ── Workflow tools — Phase 1: filesystem ──────────────────────────────────────
+_wf_init_project_root(os.path.dirname(os.path.abspath(__file__)))
+
+_registry.register("read_file", _wf_read_file,
+                   description="read a file from the user's filesystem",
+                   usage_example="/path/to/file.txt",
+                   permission="prompt",
+                   use_when="User asks to read, view, or check a specific file on their computer",
+                   skip_when="User is asking about files conceptually, or the content is already in the conversation")
+_registry.register("write_draft", _wf_write_draft,
+                   description="save a draft file (code, notes, essays) to the drafts folder",
+                   usage_example='{"filename": "notes.md", "content": "...", "category": "notes"}',
+                   permission="prompt",
+                   use_when="User asks to write, draft, or save a file — code, notes, essays, etc.",
+                   skip_when="User is asking you to compose text in the chat, not save to disk")
+_registry.register("list_directory", _wf_list_directory,
+                   description="list contents of a directory on the user's filesystem",
+                   usage_example="~/Desktop",
+                   permission="auto",
+                   use_when="User asks what files are in a directory, or you need to locate a file",
+                   skip_when="User is asking about file organization conceptually, not listing actual contents")
+_registry.register("shell", _wf_shell_readonly,
+                   description="run a read-only shell command (ls, cat, grep, find, git status, etc.)",
+                   usage_example="git log --oneline -5",
+                   permission="prompt",
+                   use_when="User asks to run a command, check git status, search files, or inspect system state",
+                   skip_when="A more specific tool (read_file, list_directory) can do the job — prefer those")
+
+# ── Workflow tools — Phase 2: web and content ─────────────────────────────────
+_registry.register("fetch_url", _wf_fetch_url,
+                   description="fetch and extract text from a URL (enhanced)",
+                   usage_example="https://example.com",
+                   permission="prompt",
+                   use_when="User provides a URL and wants its content read or summarized",
+                   skip_when="No URL mentioned, or user is asking about a topic rather than a specific page")
+_registry.register("analyze_screenshot", _wf_analyze_screenshot,
+                   description="run OCR on an image file and extract text",
+                   usage_example="/path/to/screenshot.png",
+                   permission="prompt",
+                   use_when="User asks to read text from an image or screenshot",
+                   skip_when="Image is not text-based, or user is asking about the image visually not textually")
+
+# ── Workflow tools — Phase 3: history and memory ──────────────────────────────
+_registry.register("search_history", _wf_search_history,
+                   description="search across all past session logs for a topic",
+                   usage_example='{"query": "neural networks", "time_range": "week"}',
+                   permission="auto",
+                   use_when="User asks about something discussed in a prior session, or you need to check conversation history",
+                   skip_when="The answer is in the current conversation context — don't search history for what's already visible")
+_registry.register("knowledge_graph", _wf_query_kg,
+                   description="query the identity/knowledge graph for concepts and thinkers",
+                   usage_example="epistemology",
+                   permission="auto",
+                   use_when="Need to check what concepts, thinkers, or notes are in the knowledge graph",
+                   skip_when="Normal conversation — don't query the graph as a reflex")
+_registry.register("set_reminder", _wf_set_reminder,
+                   description="create a persistent reminder",
+                   usage_example='{"text": "check on project X", "trigger_context": "next session"}',
+                   permission="prompt",
+                   use_when="User asks to be reminded about something, or you identify something worth flagging later",
+                   skip_when="User is making a casual comment, not requesting a reminder")
+
+# ── Workflow tools — Phase 4: communication ───────────────────────────────────
+_registry.register("draft_email", _wf_draft_email,
+                   description="open mail client with a pre-composed draft",
+                   usage_example='{"to": "name@example.com", "subject": "...", "body": "..."}',
+                   permission="prompt",
+                   use_when="User explicitly asks to draft or compose an email",
+                   skip_when="User mentions email casually — don't open mail client unless clearly requested")
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Phase 5: Temporal awareness ───────────────────────────────────────────────
+_temporal = TemporalAwareness(DATA_DIR)
+_temporal.record_session_start()
+
+# ── Phase 6: Proactive messaging ──────────────────────────────────────────────
+_proactive = ProactiveMessenger(DATA_DIR, temporal=_temporal)
+if not os.path.isfile(_proactive._config_path):
+    _proactive.enable()  # first run — on by default
+else:
+    _proactive.start()   # respect saved preference
+
+# ── Consolidation orchestrator ────────────────────────────────────────────────
+_consolidator = ConsolidationOrchestrator(DATA_DIR)
+_consolidator.start_idle_monitor()
+
+# ── Group A: Human profile ───────────────────────────────────────────────
+_human_profile = HumanProfile(DATA_DIR)
+_human_signals = [None]  # mutable container for latest signals
+
+# ── Group B: OCEAN profiles ──────────────────────────────────────────────
+_ocean_user = OceanProfile("user", DATA_DIR)
+_ocean_model = OceanProfile("model", DATA_DIR)
+
+# ── Group C: Mood tracker ───────────────────────────────────────────────
+_mood_tracker = MoodTracker(DATA_DIR)
+
+# ── Group D: Confidence calibration ─────────────────────────────────────
+_confidence_tracker = ConfidenceTracker(DATA_DIR)
+
+# ── Group G: Cross-session patterns ─────────────────────────────────────
+_cross_session = CrossSessionTracker(DATA_DIR)
 # ──────────────────────────────────────────────────────────────────────────────
 
 startup_history = mem.get_history_messages()
@@ -2631,10 +2887,13 @@ def chat(user_msg, history):
             )
         elif args.lower().startswith("assistant "):
             new_name = args[10:].strip()
-            _assistant_name[0] = new_name
-            config["assistant_name"] = new_name
-            _save_user_config(config)
-            reply = f"**Assistant renamed to:** {new_name}"
+            if not new_name:
+                reply = "**Name cannot be empty.** Use `/persona assistant <name>` to rename."
+            else:
+                _assistant_name[0] = new_name
+                config["assistant_name"] = new_name
+                _save_user_config(config)
+                reply = f"**Assistant renamed to:** {new_name}"
         elif args.lower().startswith("name "):
             new_name = args[5:].strip()
             _user_name[0] = new_name
@@ -3037,6 +3296,23 @@ def chat(user_msg, history):
             reply = "\n".join(lines)
         else:
             reply = "No active modifications this session."
+        history = list(history or [])
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        yield "", history
+        return
+
+    # /consolidate — run all consolidation passes manually
+    if user_msg.strip().lower() == "/consolidate":
+        def _do_consolidate():
+            return _consolidator.run_manual(session_log if session_log else None)
+        results = _do_consolidate()
+        lines = ["**Consolidation complete:**"]
+        for name, result in results.items():
+            status = result.get("status", "?")
+            elapsed = result.get("elapsed_s", 0)
+            lines.append(f"• {name}: {status} ({elapsed:.1f}s)")
+        reply = "\n".join(lines)
         history = list(history or [])
         history.append({"role": "user", "content": user_msg})
         history.append({"role": "assistant", "content": reply})
@@ -4411,6 +4687,60 @@ plt.tight_layout()
     turn_count[0] += 1
     t0 = time.time()
     searched = False
+    try:
+        _temporal.record_message()
+        _consolidator.record_activity()
+    except Exception:
+        pass
+    # Lazy embedder for semantic scoring (Groups A-D upgrade)
+    try:
+        from graceful.embedder import get_shared_embedder
+        _embedder = get_shared_embedder()
+    except Exception:
+        _embedder = None
+    # Group A: update human profile with this message
+    try:
+        _prior = session_log[-1].get("response", "") if session_log else ""
+        _human_signals[0] = _human_profile.update(
+            user_msg, human_state=_human_state[0], prior_response=_prior,
+            embedder=_embedder)
+    except Exception:
+        pass
+    # Group B: update user OCEAN from message text + signals
+    try:
+        _ocean_text_scores = score_text_smart(user_msg, _embedder)
+        _ocean_user.update(_ocean_text_scores)
+        if _human_signals[0]:
+            _ocean_sig_scores = score_from_signals(_human_signals[0], embedder=_embedder, text=user_msg)
+            _ocean_user.update(_ocean_sig_scores)
+    except Exception:
+        pass
+    # Group C: classify mood
+    _mood_result = None
+    try:
+        if _human_signals[0]:
+            _mood_result = classify_mood(_human_signals[0], user_msg, embedder=_embedder)
+            _mood_tracker.record(_mood_result)
+    except Exception:
+        pass
+    # Group D: record outcome from prior response
+    try:
+        _confidence_tracker.record_outcome(user_msg)
+    except Exception:
+        pass
+    # Group G: detect latent needs
+    _latent_needs = []
+    try:
+        if _human_signals[0]:
+            _mood_for_needs = _mood_result or classify_mood(_human_signals[0], user_msg)
+            _recent_modes = [t.get("mode", "working") for t in session_log[-5:]] if session_log else []
+            _latent_needs = detect_latent_needs(
+                _human_signals[0], _mood_for_needs,
+                _human_profile.session_trajectory(),
+                turn_count[0], _recent_modes,
+            )
+    except Exception:
+        pass
 
     # ── Immediate thinking placeholder ─────────────────────────────
     thinking = get_thinking_phrase()
@@ -4549,7 +4879,7 @@ plt.tight_layout()
             "/evolve","/thread","/continue","/knowledge","/backup",
             "/zettelkasten","/help","/counterpoint","/flashcards","/contradict",
             "/abstract","/quiz","/glossary","/week","/brief","/dream","/reading",
-            "/data","/undo","/modifications",
+            "/data","/undo","/modifications","/consolidate","/trace-mode","/learn",
         }
         if _cmd_word not in _known_cmds:
             _err_reply = f"Unknown command `{_cmd_word}`. Type / for the command list."
@@ -4575,7 +4905,9 @@ plt.tight_layout()
                 break
 
     # ── Think mode: inject CoT system instruction ──────────────
+    _an = _assistant_name[0] or "Graceful"
     _think_sys = (
+        f"You are {_an}. When reasoning internally, refer to yourself as {_an}, not by the user's name. "
         "Before answering, reason step-by-step inside <think>...</think> tags. "
         "Check your own logic, consider alternatives, then give a clean final answer. "
         "The thinking is private — only the answer after </think> is shown."
@@ -4585,10 +4917,14 @@ plt.tight_layout()
     _sys_content = system_prompt[0].strip()
     # Substitute placeholders in personality prompt
     _un = _user_name[0] or "the user"
-    _an = _assistant_name[0] or "Graceful"
     _sys_content = _sys_content.replace("{user_name}", _un).replace("{assistant_name}", _an)
+    # Reinforce identity — prevent model from confusing its name with the user's name
+    _identity = f"Your name is {_an}. You are the assistant. "
     if _user_name[0]:
-        _sys_content = f"You're talking to {_user_name[0]}.\n\n" + _sys_content
+        _identity += f"The user's name is {_user_name[0]} — that is NOT your name. "
+        _sys_content = _identity + "\n\n" + _sys_content
+    else:
+        _sys_content = _identity + "\n\n" + _sys_content
     # Locked base always appended — not overridable by user settings
     _sys_content = (_sys_content + "\n\n" + _LOCKED_BASE) if _sys_content else _LOCKED_BASE
     if _think_sys and _sys_content:
@@ -5155,6 +5491,10 @@ plt.tight_layout()
     _model_trace_raw = trace  # preserve uncoupled value for medulla
     _hs_snap = _human_state[0]  # snapshot before clearing
     _human_state[0] = {}        # clear so regen/edit don't inherit stale state
+    # Enrich typing data with inferred signals (valence, urgency) from text analysis
+    if _hs_snap and _human_signals[0]:
+        _hs_snap["emotional_valence"] = _human_signals[0].get("emotional_valence", 0)
+        _hs_snap["urgency"] = _human_signals[0].get("urgency", 0)
     if trace is not None and _hs_snap:
         trace = _coupled_trace.couple(trace, _hs_snap)
 
@@ -5443,6 +5783,12 @@ plt.tight_layout()
         + (f"<br><b>CONFIDENCE</b>: {_fw_conf_str}"
            + (f" <span style='color:#ffb74d'>{_fw_conf_detail}</span>" if _fw_conf_detail else "")
            if _fw_conf_str else "")
+        + (f"<br><b>MOOD</b>: {_mood_result['mood']}({_mood_result['intensity']:.1f})"
+           + (f" 2nd:{_mood_result['secondary']}" if _mood_result and _mood_result.get('secondary') else "")
+           + (f" | <span style='color:#64b5f6'>{_mood_tracker.detect_shift()}</span>" if _mood_tracker.detect_shift() else "")
+           if _mood_result else "")
+        + (f"<br><b>OCEAN</b>: {_ocean_user.context_string()}"
+           if _ocean_user.context_string() else "")
         + f"</div>"
     )
 
@@ -5497,6 +5843,16 @@ plt.tight_layout()
             })
         except Exception:
             pass  # profile observation should never break chat
+    # Group B: update model OCEAN from response text
+    try:
+        _ocean_model.update(score_text_smart(response, _embedder))
+    except Exception:
+        pass
+    # Group D: record confidence from response
+    try:
+        _confidence_tracker.record_response(response, embedder=_embedder)
+    except Exception:
+        pass
     # ── Async file I/O — don't block response delivery ───────────────
     _trace_entry = json.dumps({
         "session": session_id, "turn": turn_count[0],
@@ -6128,6 +6484,8 @@ async def api_init():
         "active_sid":       active_sid,
         "vision_tokens":    _VISION_TOKENS,
         "session_restored": bool(_today_sid and _has_hist),
+        "proactive_enabled": _proactive.enabled,
+        "proactive_pending": len(_proactive.get_pending()),
     })
 
 @api.post("/api/chat")
@@ -6944,6 +7302,11 @@ async def api_settings(request: Request):
         online_learning[0] = bool(data["online_learning"])
     if "trace_sync_mode" in data:
         TRACE_SYNC_MODE[0] = bool(data["trace_sync_mode"])
+    if "proactive" in data:
+        if bool(data["proactive"]):
+            _proactive.enable()
+        else:
+            _proactive.disable()
     # Persist settings
     if "trace_sync_mode" in data or "online_learning" in data or "user_name" in data or "assistant_name" in data or "system_prompt" in data or "temp" in data or "temperature" in data:
         try:
@@ -6994,6 +7357,42 @@ async def api_threshold_reset():
     except Exception:
         pass
     return JSONResponse({"ok": True, "message": "Thresholds reset to percentile-based routing"})
+
+@api.get("/api/proactive/pending")
+async def api_proactive_pending():
+    """Return pending proactive messages for frontend display."""
+    pending = _proactive.get_pending()
+    return JSONResponse({"pending": pending, "enabled": _proactive.enabled})
+
+@api.post("/api/proactive/enable")
+async def api_proactive_enable(request: Request):
+    data = await request.json()
+    if data.get("enabled", True):
+        _proactive.enable()
+    else:
+        _proactive.disable()
+    return JSONResponse({"ok": True, "enabled": _proactive.enabled})
+
+@api.post("/api/proactive/dismiss")
+async def api_proactive_dismiss(request: Request):
+    data = await request.json()
+    idx = data.get("index")
+    if idx is not None:
+        _proactive.record_action(idx, "dismiss", "user dismissed from UI")
+    else:
+        _proactive.clear_pending()
+    return JSONResponse({"ok": True})
+
+@api.post("/api/proactive/respond")
+async def api_proactive_respond(request: Request):
+    """Track user engagement with proactive message."""
+    data = await request.json()
+    _proactive.record_user_response(data.get("engaged", False))
+    return JSONResponse({"ok": True})
+
+@api.get("/api/proactive/config")
+async def api_proactive_config():
+    return JSONResponse(_proactive.get_config_for_ui())
 
 @api.get("/api/starter_prompts")
 async def api_starter_prompts():
@@ -7185,6 +7584,22 @@ async def api_mem_status():
     id_block = mem.identity.to_block()
     sp_data = _sys_profile[0].to_display_dict() if _sys_profile[0] is not None else None
     return JSONResponse({"status": s, "identity": id_block, "system_profile": sp_data})
+
+@api.get("/api/insights")
+async def api_insights():
+    """Return personality, mood, and confidence data for the Insights panel."""
+    try:
+        dance = compute_dance_coherence(_ocean_user, _ocean_model)
+    except Exception:
+        dance = {"coherence": 0, "dimensions": {}}
+    return JSONResponse({
+        "ocean_user": _ocean_user.to_summary(),
+        "ocean_model": _ocean_model.to_summary(),
+        "ocean_dance": dance,
+        "mood": _mood_tracker.session_summary(),
+        "confidence": _confidence_tracker.get_summary(),
+        "human_profile": _human_profile.get_profile_summary(),
+    })
 
 @api.post("/api/system_profile/reset")
 async def api_system_profile_reset():

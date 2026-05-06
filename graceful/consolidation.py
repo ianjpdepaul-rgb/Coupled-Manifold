@@ -431,3 +431,358 @@ def load_prior_baselines(data_dir: str) -> dict:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+# ═══════════════════════════════════════════════════
+# CONSOLIDATION ORCHESTRATOR
+# ═══════════════════════════════════════════════════
+# Mirrors brain consolidation during sleep — background passes
+# integrate recent experience into persistent state.
+
+import shutil
+import threading
+
+
+# Minimum idle time before each pass class triggers (seconds)
+_IDLE_THRESHOLDS = {
+    "summarize_session": 0,      # always runs on session end
+    "detect_patterns": 60,       # 1 min idle
+    "update_baselines": 120,     # 2 min idle
+    "compress_old_sessions": 300, # 5 min idle
+    "prune_history": 300,        # 5 min idle
+}
+
+
+class ConsolidationOrchestrator:
+    """Manages background consolidation passes.
+
+    Triggers:
+    - on_session_end: lightweight passes that should always run
+    - on_idle_threshold: triggered when idle for N minutes
+    - on_manual: triggered by /consolidate command
+    """
+
+    def __init__(self, data_dir: str):
+        self._data_dir = data_dir
+        self._log_path = os.path.join(data_dir, "logs", "consolidation.jsonl")
+        self._checkpoint_dir = os.path.join(data_dir, "consolidation", "checkpoints")
+        self._config_path = os.path.join(data_dir, "consolidation", "config.json")
+
+        self._last_activity: float = time.time()
+        self._last_consolidation: float | None = None
+        self._paused: bool = False
+        self._running: bool = False
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+        # Pass results for UI
+        self._last_results: dict = {}
+
+        # Load config
+        self._enabled_passes: dict[str, bool] = {
+            "summarize_session": True,
+            "detect_patterns": True,
+            "update_baselines": True,
+            "compress_old_sessions": True,
+            "prune_history": True,
+        }
+        self._idle_threshold: int = 600  # 10 minutes default
+        self._compress_age_weeks: int = 4
+        self._load_config()
+
+    def _load_config(self):
+        if not os.path.isfile(self._config_path):
+            return
+        try:
+            with open(self._config_path) as f:
+                cfg = json.load(f)
+            self._enabled_passes.update(cfg.get("enabled_passes", {}))
+            self._idle_threshold = cfg.get("idle_threshold", 600)
+            self._compress_age_weeks = cfg.get("compress_age_weeks", 4)
+            self._paused = cfg.get("paused", False)
+            self._last_consolidation = cfg.get("last_consolidation")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def _save_config(self):
+        os.makedirs(os.path.dirname(self._config_path), exist_ok=True)
+        cfg = {
+            "enabled_passes": self._enabled_passes,
+            "idle_threshold": self._idle_threshold,
+            "compress_age_weeks": self._compress_age_weeks,
+            "paused": self._paused,
+            "last_consolidation": self._last_consolidation,
+        }
+        try:
+            with open(self._config_path, "w") as f:
+                json.dump(cfg, f, indent=2)
+        except OSError:
+            pass
+
+    def record_activity(self):
+        """Call on each user message to reset idle timer."""
+        self._last_activity = time.time()
+
+    @property
+    def idle_seconds(self) -> float:
+        return time.time() - self._last_activity
+
+    def start_idle_monitor(self):
+        """Start background thread that checks for idle periods."""
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._idle_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def _idle_loop(self):
+        """Check for idle periods every 60 seconds."""
+        while not self._stop.wait(60):
+            if self._paused or self._running:
+                continue
+            if self.idle_seconds >= self._idle_threshold:
+                self._run_idle_passes()
+
+    def _run_idle_passes(self):
+        """Run passes appropriate for current idle duration."""
+        if self._running:
+            return
+        self._running = True
+        try:
+            idle = self.idle_seconds
+            for pass_name, threshold in _IDLE_THRESHOLDS.items():
+                if threshold > 0 and idle >= threshold:
+                    if self._enabled_passes.get(pass_name, True):
+                        self._run_pass(pass_name)
+            self._last_consolidation = time.time()
+            self._save_config()
+        finally:
+            self._running = False
+
+    def on_session_end(self, session_history: list[dict]):
+        """Run lightweight passes at session end."""
+        if self._paused:
+            return
+        if self._enabled_passes.get("summarize_session", True):
+            self._run_summarize(session_history)
+
+    def run_manual(self, session_history: list[dict] | None = None):
+        """Run all enabled passes manually (/consolidate)."""
+        if self._running:
+            return {"status": "already running"}
+        self._running = True
+        results = {}
+        try:
+            if session_history and self._enabled_passes.get("summarize_session", True):
+                results["summarize_session"] = self._run_summarize(session_history)
+            for pass_name in ("detect_patterns", "update_baselines", "prune_history"):
+                if self._enabled_passes.get(pass_name, True):
+                    results[pass_name] = self._run_pass(pass_name)
+            if self._enabled_passes.get("compress_old_sessions", True):
+                results["compress_old_sessions"] = self._run_compress()
+            self._last_consolidation = time.time()
+            self._save_config()
+        finally:
+            self._running = False
+        self._last_results = results
+        return results
+
+    # ── Individual pass runners ──────────────────────────────────────
+
+    def _run_pass(self, name: str) -> dict:
+        """Run a named pass and log the result."""
+        t0 = time.time()
+        result = {"pass": name, "status": "skipped"}
+        try:
+            if name == "detect_patterns":
+                summaries = load_prior_summaries(self._data_dir)
+                if summaries:
+                    patterns = detect_patterns(summaries)
+                    result = {"pass": name, "status": "ok",
+                              "patterns_found": len(patterns.get("all_patterns", []))}
+                else:
+                    result = {"pass": name, "status": "no_data"}
+
+            elif name == "update_baselines":
+                summaries = load_prior_summaries(self._data_dir)
+                baselines = load_prior_baselines(self._data_dir)
+                if summaries:
+                    new_baselines = update_baselines(summaries, baselines)
+                    bl_path = os.path.join(self._data_dir, "consolidation", "baselines.json")
+                    os.makedirs(os.path.dirname(bl_path), exist_ok=True)
+                    with open(bl_path, "w") as f:
+                        json.dump(new_baselines, f, indent=2)
+                    result = {"pass": name, "status": "ok"}
+                else:
+                    result = {"pass": name, "status": "no_data"}
+
+            elif name == "prune_history":
+                summaries = load_prior_summaries(self._data_dir)
+                if len(summaries) > 10:
+                    baselines = load_prior_baselines(self._data_dir)
+                    pruned = prune_history(summaries, baselines)
+                    result = {"pass": name, "status": "ok",
+                              "before": len(summaries), "after": len(pruned)}
+                else:
+                    result = {"pass": name, "status": "too_few_entries"}
+
+        except Exception as e:
+            result = {"pass": name, "status": "error", "error": str(e)}
+
+        result["elapsed_s"] = round(time.time() - t0, 2)
+        self._log(result)
+        return result
+
+    def _run_summarize(self, history: list[dict]) -> dict:
+        """Run summarize_session pass."""
+        t0 = time.time()
+        try:
+            summary = summarize_session(history)
+            # Persist summary
+            path = os.path.join(self._data_dir, "consolidation", "session_summaries.jsonl")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a") as f:
+                f.write(json.dumps(summary, default=str) + "\n")
+            result = {"pass": "summarize_session", "status": "ok",
+                      "turns": summary.get("turns", 0)}
+        except Exception as e:
+            result = {"pass": "summarize_session", "status": "error", "error": str(e)}
+        result["elapsed_s"] = round(time.time() - t0, 2)
+        self._log(result)
+        return result
+
+    def _run_compress(self) -> dict:
+        """Compress old sessions beyond the age threshold."""
+        t0 = time.time()
+        sessions_dir = os.path.join(self._data_dir, "sessions")
+        archive_dir = os.path.join(self._data_dir, "sessions", "archive")
+        if not os.path.isdir(sessions_dir):
+            return {"pass": "compress_old_sessions", "status": "no_sessions"}
+
+        cutoff = time.time() - (self._compress_age_weeks * 7 * 86400)
+        compressed = 0
+
+        for fname in os.listdir(sessions_dir):
+            if not fname.startswith("session_") or not fname.endswith(".json"):
+                continue
+            try:
+                ts = int(fname.replace("session_", "").replace(".json", ""))
+            except ValueError:
+                continue
+            if ts >= cutoff:
+                continue
+
+            fpath = os.path.join(sessions_dir, fname)
+            try:
+                with open(fpath) as f:
+                    sess = json.load(f)
+                turns = sess.get("turns", [])
+                if len(turns) <= 2:
+                    continue  # too short to compress
+
+                # Create summary
+                summary = summarize_session(turns)
+                summary["original_file"] = fname
+                summary["session_id"] = sess.get("session_id", ts)
+
+                # Archive original
+                os.makedirs(archive_dir, exist_ok=True)
+                shutil.move(fpath, os.path.join(archive_dir, fname))
+
+                # Write compressed version
+                compressed_data = {
+                    "session_id": sess.get("session_id", ts),
+                    "compressed": True,
+                    "summary": summary,
+                    "turn_count": len(turns),
+                }
+                with open(fpath.replace(".json", "_compressed.json"), "w") as f:
+                    json.dump(compressed_data, f, indent=2)
+                compressed += 1
+            except Exception:
+                continue
+
+        result = {"pass": "compress_old_sessions", "status": "ok",
+                  "compressed": compressed}
+        result["elapsed_s"] = round(time.time() - t0, 2)
+        self._log(result)
+        return result
+
+    # ── Reversibility ────────────────────────────────────────────────
+
+    def create_checkpoint(self, label: str) -> str:
+        """Create a checkpoint of current consolidation state."""
+        os.makedirs(self._checkpoint_dir, exist_ok=True)
+        ckpt_name = f"ckpt_{int(time.time())}_{label}"
+        ckpt_path = os.path.join(self._checkpoint_dir, ckpt_name)
+        os.makedirs(ckpt_path, exist_ok=True)
+
+        # Copy key files
+        for fname in ("baselines.json", "session_summaries.jsonl", "config.json"):
+            src = os.path.join(self._data_dir, "consolidation", fname)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(ckpt_path, fname))
+
+        self._log({"action": "checkpoint_created", "label": label, "path": ckpt_path})
+        return ckpt_path
+
+    def restore_checkpoint(self, ckpt_path: str) -> bool:
+        """Restore from a checkpoint."""
+        if not os.path.isdir(ckpt_path):
+            return False
+        consol_dir = os.path.join(self._data_dir, "consolidation")
+        for fname in os.listdir(ckpt_path):
+            src = os.path.join(ckpt_path, fname)
+            dst = os.path.join(consol_dir, fname)
+            if os.path.isfile(src):
+                shutil.copy2(src, dst)
+        self._load_config()
+        self._log({"action": "checkpoint_restored", "path": ckpt_path})
+        return True
+
+    def get_latest_checkpoint(self) -> str | None:
+        """Return path to most recent checkpoint."""
+        if not os.path.isdir(self._checkpoint_dir):
+            return None
+        ckpts = sorted(os.listdir(self._checkpoint_dir))
+        return os.path.join(self._checkpoint_dir, ckpts[-1]) if ckpts else None
+
+    # ── UI/API ───────────────────────────────────────────────────────
+
+    def get_status(self) -> dict:
+        """Return status for settings panel."""
+        return {
+            "last_consolidation": self._last_consolidation,
+            "last_consolidation_human": (
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(self._last_consolidation))
+                if self._last_consolidation else "never"
+            ),
+            "idle_seconds": round(self.idle_seconds),
+            "idle_threshold": self._idle_threshold,
+            "paused": self._paused,
+            "running": self._running,
+            "enabled_passes": self._enabled_passes,
+            "last_results": self._last_results,
+        }
+
+    def pause(self):
+        self._paused = True
+        self._save_config()
+
+    def resume(self):
+        self._paused = False
+        self._save_config()
+
+    def _log(self, entry: dict):
+        os.makedirs(os.path.dirname(self._log_path), exist_ok=True)
+        entry["ts"] = time.time()
+        try:
+            with open(self._log_path, "a") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
+        except OSError:
+            pass

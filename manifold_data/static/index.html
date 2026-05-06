@@ -746,6 +746,11 @@ input[type=range]{accent-color:var(--primary)!important;}
       <button class="s-btn" id="learn-toggle-btn" style="min-width:60px">On</button>
     </div>
     <div class="s-sec">
+      <div class="s-lbl">Proactive Messaging</div>
+      <div class="s-sub">unprompted check-ins, reminders, and nudges</div>
+      <button class="s-btn" id="proactive-toggle-btn" style="min-width:60px">On</button>
+    </div>
+    <div class="s-sec">
       <div class="s-lbl">Memory Status</div>
       <button class="s-btn" id="mem-btn">Refresh</button>
       <pre id="mem-out"></pre>
@@ -780,6 +785,35 @@ input[type=range]{accent-color:var(--primary)!important;}
       <div class="s-row">
         <button class="s-btn" id="thresh-refresh-btn">Refresh</button>
         <button class="s-btn" id="thresh-reset-btn">Reset to Auto</button>
+      </div>
+    </div>
+    <div class="s-sec">
+      <div class="s-lbl">Insights</div>
+      <div class="s-sub">personality profile, mood trajectory, confidence calibration</div>
+      <div id="insights-panel" style="font-family:var(--mono);font-size:.78em;color:var(--text2)">
+        <div style="display:flex;gap:16px;margin:8px 0">
+          <div style="flex:1">
+            <div style="color:var(--text3);font-size:.72em;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">OCEAN Profile (You)</div>
+            <div id="ocean-user-chart" style="height:130px;position:relative;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>
+          </div>
+          <div style="flex:1">
+            <div style="color:var(--text3);font-size:.72em;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">OCEAN Profile (Model)</div>
+            <div id="ocean-model-chart" style="height:130px;position:relative;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>
+          </div>
+        </div>
+        <div id="ocean-dance-metric" style="font-size:.72em;color:var(--text3);margin:4px 0;text-align:center"></div>
+        <div style="margin:8px 0">
+          <div style="color:var(--text3);font-size:.72em;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Session Mood</div>
+          <div id="mood-chart" style="position:relative;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 8px"></div>
+        </div>
+        <div style="margin:8px 0">
+          <div style="color:var(--text3);font-size:.72em;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Confidence Calibration</div>
+          <div id="conf-chart" style="height:60px;position:relative;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>
+          <div id="conf-ece" style="font-size:.72em;color:var(--text3);margin:4px 0;text-align:center"></div>
+        </div>
+      </div>
+      <div class="s-row">
+        <button class="s-btn" id="insights-refresh-btn">Refresh</button>
       </div>
     </div>
     <div class="s-sec">
@@ -1133,8 +1167,8 @@ function _persistSession(source){var sid=activeSid,len=history.length;console.lo
 // Input history (↑/↓ navigation)
 var _inputHistory=[],_inputHistIdx=-1,_inputDraft="";
 // Coupled trace — human state tracker (Move 2)
-var _hs={typing_start:0,last_key:0,keystrokes:0,backspaces:0,pauses:[],read_start:0,scroll_ups:0};
-function _hsReset(){_hs={typing_start:0,last_key:0,keystrokes:0,backspaces:0,pauses:[],read_start:0,scroll_ups:0};}
+var _hs={typing_start:0,last_key:0,keystrokes:0,backspaces:0,pauses:[],read_start:0,scroll_ups:0,pasted_chars:0,total_chars:0};
+function _hsReset(){_hs={typing_start:0,last_key:0,keystrokes:0,backspaces:0,pauses:[],read_start:0,scroll_ups:0,pasted_chars:0,total_chars:0};}
 function _hsCompute(){
   var ks=_hs.keystrokes;
   var typing_ms=_hs.typing_start>0&&_hs.last_key>_hs.typing_start?_hs.last_key-_hs.typing_start:0;
@@ -1144,9 +1178,13 @@ function _hsCompute(){
   var median_pause=vp.length>0?vp[Math.floor(vp.length/2)]:0;
   var max_pause=vp.length>0?vp[vp.length-1]:0;
   var read_ms=_hs.read_start>0&&_hs.typing_start>_hs.read_start?_hs.typing_start-_hs.read_start:0;
+  var rhythm_var=0;
+  if(vp.length>1){var mu=vp.reduce(function(a,b){return a+b;},0)/vp.length;rhythm_var=vp.reduce(function(a,b){return a+(b-mu)*(b-mu);},0)/vp.length;}
+  var paste_ratio=_hs.total_chars>0?_hs.pasted_chars/_hs.total_chars:0;
   return {typing_duration_ms:typing_ms,keystroke_count:ks,edit_ratio:Math.round(edit_ratio*100)/100,
           median_pause_ms:Math.round(median_pause),max_pause_ms:Math.round(max_pause),
-          read_time_ms:Math.round(read_ms),scroll_ups:_hs.scroll_ups};
+          read_time_ms:Math.round(read_ms),scroll_ups:_hs.scroll_ups,
+          typing_rhythm_variance:Math.round(rhythm_var),paste_ratio:Math.round(paste_ratio*100)/100};
 }
 var CMDS=[
   /* ── Memory ─────────────────────────────────────────── */
@@ -1211,12 +1249,19 @@ var CMDS=[
   {cmd:"/dream",      desc:"Dream mode — lateral generative response",     icon:"&#x1F4AB;",group:"Modes"    },
   {cmd:"/reading",    desc:"Personalized reading list",                    icon:"&#x1F4DA;",group:"Modes"    },
   {cmd:"/mood",       desc:"Current conversational mood analysis",         icon:"&#x1F3AD;",group:"Modes"    },
+  {cmd:"/mode ",      desc:"Switch persona (list / activate / save)",      icon:"&#x1F3AD;",group:"Modes"    },
+  {cmd:"/persona",    desc:"Personality config — name, prompt, reset",     icon:"&#x1F464;",group:"Modes"    },
   /* ── Training ────────────────────────────────────────── */
   {cmd:"/finetune",   desc:"Fine-tune LoRA on corpus",                     icon:"&#x1F52C;",group:"Training" },
   {cmd:"/adapter ",   desc:"Save/load/list LoRA adapter profiles",         icon:"&#x1F9EC;",group:"Training" },
   {cmd:"/learn ",     desc:"Toggle online LoRA updates (on/off)",          icon:"&#x1F9E0;",group:"Training" },
   /* ── Vision ──────────────────────────────────────────── */
   {cmd:"/visionquality ",desc:"Vision token budget (low/medium/high/ultra)",icon:"&#x1F441;",group:"Vision"  },
+  /* ── Model ─────────────────────────────────────────── */
+  {cmd:"/undo",       desc:"Revert most recent model self-modification",   icon:"&#x21A9;", group:"Model"    },
+  {cmd:"/modifications",desc:"List active model modifications",            icon:"&#x1F527;",group:"Model"    },
+  {cmd:"/consolidate",desc:"Run all consolidation passes manually",        icon:"&#x1F504;",group:"Model"    },
+  {cmd:"/trace-mode ",desc:"Trace computation mode (sync/async)",          icon:"&#x1F50C;",group:"Model"    },
   /* ── Utility ─────────────────────────────────────────── */
   {cmd:"/timer ",     desc:"Set a countdown timer",                        icon:"&#x23F1;", group:"Utility"  },
   {cmd:"/stats",      desc:"System status",                                icon:"&#x1F4E1;",group:"Utility"  },
@@ -1225,6 +1270,8 @@ var CMDS=[
   {cmd:"/week",       desc:"Weekly activity summary",                      icon:"&#x1F4C5;",group:"Utility"  },
   {cmd:"/brief",      desc:"Quick session briefing",                       icon:"&#x1F4CB;",group:"Utility"  },
   {cmd:"/zettelkasten",desc:"Zettelkasten-style note from conversation",   icon:"&#x1F5C2;",group:"Utility"  },
+  {cmd:"/help",       desc:"Show all commands and usage",                  icon:"&#x2753;", group:"Utility"  },
+  {cmd:"/math ",      desc:"Symbolic math (alias for /calc)",              icon:"&#x221E;", group:"Code"     },
   {cmd:"/?",          desc:"All commands",                                 icon:"&#x2753;", group:"Utility"  },
 ];
 function toast(msg,type){
@@ -1724,7 +1771,21 @@ function updateMedulla(status,hist){
     var last=hist[hist.length-1];
     if(last&&last.role==="assistant"&&last.content){
       var mi=last.content.indexOf("<!--MED-->");
-      if(mi>=0){bar.innerHTML=last.content.slice(mi+10);return;}
+      if(mi>=0){
+        var medHtml=last.content.slice(mi+10);
+        bar.innerHTML=medHtml;
+        // Extract mood for status pill
+        var moodMatch=medHtml.match(/<b>MOOD<\/b>:\s*(\w+)\(([0-9.]+)\)/);
+        if(moodMatch){
+          var moodLabel=moodMatch[1],moodInt=parseFloat(moodMatch[2]);
+          var moodColors={positive:"sp-green",negative:"sp-red",anxious:"sp-amber",curious:"sp-blue",playful:"sp-purple",confused:"sp-amber",focused:"sp-gray"};
+          if(moodLabel!=="neutral"&&moodInt>0.3){
+            _statusStrip.set("mood",moodLabel,moodColors[moodLabel]||"sp-gray",{title:"Detected mood: "+moodLabel+" ("+moodInt.toFixed(1)+")"});
+            setTimeout(function(){_statusStrip.clear("mood");},15000);
+          }else{_statusStrip.clear("mood");}
+        }
+        return;
+      }
     }
   }
   bar.textContent=status;
@@ -2179,6 +2240,8 @@ async function init(){
     document.getElementById("sync-btn").classList.toggle("on",!!d.trace_sync_mode);
     var _learnBtn=document.getElementById("learn-toggle-btn");
     if(_learnBtn){var _learnOn=d.online_learning!==false;_learnBtn.textContent=_learnOn?"On":"Off";_learnBtn.style.background=_learnOn?"rgba(74,222,128,.12)":"rgba(255,255,255,.04)";_learnBtn.style.borderColor=_learnOn?"rgba(74,222,128,.3)":"var(--border2)";_learnBtn.style.color=_learnOn?"#4ade80":"var(--text3)";}
+    var _proBtn=document.getElementById("proactive-toggle-btn");
+    if(_proBtn){var _proOn=d.proactive_enabled!==false;_proBtn.textContent=_proOn?"On":"Off";_proBtn.style.background=_proOn?"rgba(124,58,237,.12)":"rgba(255,255,255,.04)";_proBtn.style.borderColor=_proOn?"rgba(124,58,237,.3)":"var(--border2)";_proBtn.style.color=_proOn?"#a78bfa":"var(--text3)";}
     if(d.model_mode==='small') _statusStrip.set('model','\u26a1 fast','sp-gray',{title:'Fast model mode'});
     var tsl=document.getElementById("temp-sl");if(tsl)tsl.value=d.temp||0;
     var tbsl=document.getElementById("think-budget-sl");
@@ -2205,6 +2268,8 @@ async function init(){
       var _turns=Math.floor(d.history.length/2);
       setTimeout(function(){toast("resumed — "+_turns+" turn"+(_turns===1?"":"s")+" from last session","ok");},800);
     }
+    // Check for proactive messages after short delay
+    setTimeout(_checkProactive,3000);
   }catch(e){console.error("init",e);}
 }
 async function _loadPins(){
@@ -2227,6 +2292,51 @@ async function _loadPins(){
     });
   }catch(e){}
 }
+// ── Proactive messaging — poll for pending messages ────────────────
+var _proactiveShown={};
+function _checkProactive(){
+  fetch("/api/proactive/pending").then(function(r){return r.json();}).then(function(d){
+    if(!d.pending||!d.pending.length)return;
+    var w=getMW();
+    d.pending.forEach(function(msg,i){
+      var key=msg.queued_human||("p"+i);
+      if(_proactiveShown[key])return;
+      _proactiveShown[key]=true;
+      var row=document.createElement("div");row.className="msg-row assistant proactive-msg";
+      row.style.cssText="opacity:0;transform:translateY(8px);transition:all 0.3s ease";
+      var bub=document.createElement("div");bub.className="bubble";
+      bub.style.cssText="border-left:3px solid #7c3aed;background:rgba(124,58,237,0.06)";
+      var trigger=msg.trigger||{};
+      var text=trigger.text||trigger.detail||"Something came up";
+      var type=trigger.type||"";
+      bub.innerHTML="<div style='font-size:0.75em;color:#7c3aed;margin-bottom:4px;font-weight:600'>"
+        +(type==="reminder"?"\u23F0 Reminder":"\u{1F4AC} Graceful")+"</div>"
+        +renderMd(text);
+      var acts=document.createElement("div");acts.style.cssText="display:flex;gap:8px;margin-top:6px";
+      var engBtn=document.createElement("button");
+      engBtn.textContent="tell me more";engBtn.className="ma-btn";
+      engBtn.style.cssText="font-size:0.78em;padding:2px 8px;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);border-radius:4px;color:#a78bfa;cursor:pointer";
+      engBtn.onclick=function(){
+        fetch("/api/proactive/respond",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({engaged:true})});
+        sendMessage(text);row.style.opacity="0.5";
+      };
+      var disBtn=document.createElement("button");
+      disBtn.textContent="dismiss";disBtn.className="ma-btn";
+      disBtn.style.cssText="font-size:0.78em;padding:2px 8px;background:rgba(255,255,255,0.04);border:1px solid var(--border2);border-radius:4px;color:var(--text3);cursor:pointer";
+      disBtn.onclick=function(){
+        fetch("/api/proactive/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({index:i})});
+        fetch("/api/proactive/respond",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({engaged:false})});
+        row.style.opacity="0";setTimeout(function(){row.remove();},300);
+      };
+      acts.appendChild(engBtn);acts.appendChild(disBtn);
+      bub.appendChild(acts);row.appendChild(bub);w.appendChild(row);
+      requestAnimationFrame(function(){requestAnimationFrame(function(){row.style.opacity="1";row.style.transform="translateY(0)";});});
+      scrollBot(false);
+    });
+  }).catch(function(){});
+}
+setInterval(_checkProactive,60000);
+
 var slPop=null,slIdx=0,slFilt=[];
 document.addEventListener("DOMContentLoaded",function(){
   init();
@@ -2330,6 +2440,7 @@ document.addEventListener("DOMContentLoaded",function(){
   };
   document.getElementById("medulla-btn").onclick=function(){document.getElementById("medulla-bar").classList.toggle("on");};
   (function(){var lb=document.getElementById("learn-toggle-btn");if(lb)lb.onclick=async function(){var on=lb.textContent==="Off";lb.textContent=on?"On":"Off";lb.style.background=on?"rgba(74,222,128,.12)":"rgba(255,255,255,.04)";lb.style.borderColor=on?"rgba(74,222,128,.3)":"var(--border2)";lb.style.color=on?"#4ade80":"var(--text3)";await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({online_learning:on})});};})();
+  (function(){var pb=document.getElementById("proactive-toggle-btn");if(pb){pb.onclick=async function(){var on=pb.textContent==="Off";pb.textContent=on?"On":"Off";pb.style.background=on?"rgba(124,58,237,.12)":"rgba(255,255,255,.04)";pb.style.borderColor=on?"rgba(124,58,237,.3)":"var(--border2)";pb.style.color=on?"#a78bfa":"var(--text3)";await fetch("/api/proactive/enable",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});};};})();
   document.querySelectorAll(".sug").forEach(function(s){s.onclick=function(){sendMessage(s.dataset.text);};});
   document.getElementById("sb-filter").oninput=function(){renderSessions(_allSessions);};
   document.getElementById("settings-btn").onclick=function(){document.getElementById("settings-wrap").classList.add("open");_loadCoevo();};
@@ -2465,6 +2576,106 @@ document.addEventListener("DOMContentLoaded",function(){
     _loadCoevo();
     toast("System profile reset","ok");
   };
+  // ── Insights panel (OCEAN radar, mood bars, confidence calibration) ──
+  function _renderOceanRadar(data,targetId){
+    var el=document.getElementById(targetId);if(!el)return;
+    var dims=["Openness","Conscientiousness","Extraversion","Agreeableness","Neuroticism"];
+    var labels=["O","C","E","A","N"];
+    var w=el.offsetWidth||140,h=130,cx=w/2,cy=68,r=50;
+    var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
+    // Pentagon grid
+    var angles=dims.map(function(_,i){return -Math.PI/2+i*2*Math.PI/5;});
+    for(var ring=0.25;ring<=1;ring+=0.25){
+      var pts=angles.map(function(a){return(cx+Math.cos(a)*r*ring).toFixed(1)+","+(cy+Math.sin(a)*r*ring).toFixed(1);});
+      svg+='<polygon points="'+pts.join(" ")+'" fill="none" stroke="var(--border2,#333)" stroke-width="0.5"/>';
+    }
+    // Axes
+    angles.forEach(function(a,i){
+      var ex=cx+Math.cos(a)*r*1.15,ey=cy+Math.sin(a)*r*1.15;
+      svg+='<line x1="'+cx+'" y1="'+cy+'" x2="'+(cx+Math.cos(a)*r)+'" y2="'+(cy+Math.sin(a)*r)+'" stroke="var(--border2,#333)" stroke-width="0.5"/>';
+      svg+='<text x="'+ex.toFixed(1)+'" y="'+(ey+3).toFixed(1)+'" fill="var(--text3,#888)" font-size="9" font-family="var(--mono)" text-anchor="middle">'+labels[i]+'</text>';
+    });
+    // Data polygon
+    if(data){
+      var pts2=dims.map(function(d,i){
+        var v=(data[d]&&data[d].score!=null)?data[d].score:0.5;
+        var conf=(data[d]&&data[d].confidence!=null)?data[d].confidence:0;
+        return{x:cx+Math.cos(angles[i])*r*v,y:cy+Math.sin(angles[i])*r*v,conf:conf};
+      });
+      var polyPts=pts2.map(function(p){return p.x.toFixed(1)+","+p.y.toFixed(1);}).join(" ");
+      svg+='<polygon points="'+polyPts+'" fill="rgba(240,52,104,0.15)" stroke="var(--accent,#f03468)" stroke-width="1.5"/>';
+      pts2.forEach(function(p){
+        var op=Math.max(0.3,p.conf);
+        svg+='<circle cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="2.5" fill="var(--accent,#f03468)" opacity="'+op.toFixed(2)+'"/>';
+      });
+    }else{
+      svg+='<text x="'+cx+'" y="'+cy+'" fill="var(--text3)" font-size="10" text-anchor="middle">No data yet</text>';
+    }
+    svg+='</svg>';
+    el.innerHTML=svg;
+  }
+  function _renderMoodBars(moodData){
+    var el=document.getElementById("mood-chart");if(!el)return;
+    var dist=moodData&&moodData.distribution?moodData.distribution:{};
+    var moods=Object.keys(dist);
+    if(moods.length===0){el.innerHTML='<div style="color:var(--text3);font-size:.72em;padding:8px">No mood data yet</div>';return;}
+    var colors={positive:"#4ade80",negative:"#f87171",anxious:"#fbbf24",curious:"#60a5fa",focused:"#9ca3af",playful:"#c084fc",confused:"#fb923c",neutral:"#6b7280"};
+    var html='';
+    moods.sort(function(a,b){return dist[b]-dist[a];});
+    moods.forEach(function(m){
+      var pct=Math.round(dist[m]*100);
+      var c=colors[m]||"#888";
+      html+='<div style="display:flex;align-items:center;gap:6px;margin:2px 0">';
+      html+='<span style="width:60px;font-size:.7em;color:var(--text3);text-align:right">'+m+'</span>';
+      html+='<div style="flex:1;height:10px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden">';
+      html+='<div style="width:'+pct+'%;height:100%;background:'+c+';border-radius:3px;transition:width .3s"></div></div>';
+      html+='<span style="width:28px;font-size:.68em;color:var(--text3)">'+pct+'%</span></div>';
+    });
+    if(moodData.shifts!=null){html+='<div style="font-size:.68em;color:var(--text3);margin-top:4px">'+moodData.total_turns+' turns, '+moodData.shifts+' mood shifts</div>';}
+    el.innerHTML=html;
+  }
+  function _renderConfCalibration(confData){
+    var el=document.getElementById("conf-chart");if(!el)return;
+    var eceEl=document.getElementById("conf-ece");
+    var bins=confData&&confData.bins?confData.bins:{};
+    var keys=Object.keys(bins);
+    if(keys.length===0||confData.total_calibrated_turns<3){el.innerHTML='<div style="text-align:center;padding:20px 0;color:var(--text3);font-size:.72em">Need more turns for calibration</div>';if(eceEl)eceEl.textContent='';return;}
+    var w=el.offsetWidth||200,h=60;
+    var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
+    var bw=w/keys.length;
+    keys.forEach(function(k,i){
+      var b=bins[k];var acc=b.accuracy!=null?b.accuracy:0;var n=b.samples||0;
+      var lo=parseFloat(k.split("-")[0]),hi=parseFloat(k.split("-")[1]),expected=(lo+hi)/2;
+      // Expected (diagonal reference)
+      svg+='<rect x="'+(i*bw+2)+'" y="'+(h-expected*h*0.85-4)+'" width="'+(bw-4)+'" height="3" fill="rgba(255,255,255,0.1)" rx="1"/>';
+      // Actual
+      if(n>0){
+        var barH=acc*h*0.85;
+        var c=Math.abs(acc-expected)<0.15?"#4ade80":"#fbbf24";
+        svg+='<rect x="'+(i*bw+4)+'" y="'+(h-barH-4)+'" width="'+(bw-8)+'" height="'+barH+'" fill="'+c+'" opacity="0.7" rx="2"/>';
+      }
+      svg+='<text x="'+(i*bw+bw/2)+'" y="'+(h-1)+'" fill="var(--text3)" font-size="7" text-anchor="middle" font-family="var(--mono)">'+k.split("-")[0]+'</text>';
+    });
+    svg+='</svg>';
+    el.innerHTML=svg;
+    if(eceEl){
+      var ece=confData.calibration_error;
+      eceEl.textContent=ece!=null?'ECE: '+ece.toFixed(3)+' | Avg conf: '+confData.session_avg_confidence.toFixed(2)+' ('+confData.session_turns+' turns)':'Collecting data...';
+    }
+  }
+  async function _loadInsights(){
+    try{
+      var r=await fetch("/api/insights"),d=await r.json();
+      _renderOceanRadar(d.ocean_user,"ocean-user-chart");
+      _renderOceanRadar(d.ocean_model,"ocean-model-chart");
+      var danceEl=document.getElementById("ocean-dance-metric");
+      if(danceEl&&d.ocean_dance){danceEl.textContent="Dance coherence: "+(d.ocean_dance.coherence*100).toFixed(0)+"%";}
+      _renderMoodBars(d.mood);
+      _renderConfCalibration(d.confidence);
+    }catch(e){console.log("insights load error",e);}
+  }
+  document.getElementById("insights-refresh-btn").onclick=_loadInsights;
+  // ── end insights ──
   var fi=document.getElementById("file-inp");
   document.getElementById("attach-btn").onclick=function(){fi.click();};
   fi.onchange=async function(){
@@ -2687,7 +2898,12 @@ document.addEventListener("DOMContentLoaded",function(){
       if(_hs.last_key>0){var gap=now-_hs.last_key;if(gap>20)_hs.pauses.push(gap);}
       _hs.last_key=now;
       _hs.keystrokes++;
+      _hs.total_chars++;
       if(e.key==="Backspace"||e.key==="Delete")_hs.backspaces++;
+    });
+    msgEl.addEventListener("paste",function(e){
+      var pd=e.clipboardData||window.clipboardData;
+      if(pd){var t=pd.getData("text")||"";_hs.pasted_chars+=t.length;_hs.total_chars+=t.length;}
     });
     var chatEl=document.getElementById("messages");
     if(chatEl){
@@ -4217,16 +4433,6 @@ document.addEventListener("DOMContentLoaded",function(){
       var zoom=d3.zoom().scaleExtent([0.1,8])
         .on("zoom",function(e){g.attr("transform",e.transform);});
       svg.call(zoom);
-
-      // Reset-view button injected once into panel header
-      var hdr=document.getElementById("kg-panel-header");
-      if(hdr&&!hdr.querySelector(".kg-reset-btn")){
-        var rb=document.createElement("button");
-        rb.className="kg-reset-btn";rb.textContent="⌖ Reset";
-        rb.style.cssText="background:none;border:1px solid var(--border2);border-radius:5px;color:var(--text3);font-size:.68em;padding:2px 8px;cursor:pointer;font-family:var(--font);margin-right:6px;";
-        rb.addEventListener("click",function(){svg.transition().duration(300).call(zoom.transform,d3.zoomIdentity);});
-        hdr.insertBefore(rb,hdr.querySelector("button"));
-      }
 
       var nodes=_graphData.nodes.map(function(d){return Object.assign({},d);});
       var edges=(_graphData.edges||_graphData.links||[]).map(function(d){return Object.assign({},d);});

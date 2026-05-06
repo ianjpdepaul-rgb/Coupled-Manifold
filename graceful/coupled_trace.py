@@ -96,6 +96,17 @@ def _compute_nudge(hs):
         speed_signal = _clamp((cps - 3) / 4, -1.0, 1.0)
         signals.append(("typing_speed", speed_signal, 2.0))
 
+    # ── Inferred signals from text analysis (enriched coupling) ──
+    valence = hs.get("emotional_valence", 0)
+    if valence != 0:
+        # Negative valence pushes trace down (concern), positive pushes up
+        signals.append(("valence", _clamp(valence, -1.0, 1.0), 3.0))
+
+    urgency = hs.get("urgency", 0)
+    if urgency > 0.3:
+        # High urgency → slight negative nudge (user needs more from the system)
+        signals.append(("urgency", -_clamp(urgency, 0, 1.0), 2.0))
+
     if not signals:
         return 0.0
 
@@ -132,6 +143,12 @@ def summarize(model_trace, human_state, coupled_trace):
     scroll = human_state.get("scroll_ups", 0)
     if scroll > 0:
         parts.append(f"scroll:{scroll}")
+    valence = human_state.get("emotional_valence", 0)
+    if abs(valence) > 0.2:
+        parts.append(f"val:{valence:+.1f}")
+    urgency = human_state.get("urgency", 0)
+    if urgency > 0.3:
+        parts.append(f"urg:{urgency:.1f}")
 
     sign = "+" if nudge > 0 else ""
     nudge_str = f"{sign}{nudge:.1f}"

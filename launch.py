@@ -3,7 +3,7 @@ COUPLED MANIFOLD — GUI Launcher & Installer
 Handles first-run setup wizard and normal app launching.
 Uses only stdlib tkinter so it works before the venv exists.
 """
-import os, sys, json, time, threading, subprocess, socket
+import os, sys, json, time, threading, subprocess, socket, webbrowser
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
@@ -63,49 +63,7 @@ def mem_summary() -> str:
         return ""
 
 
-def _open_app_window(url="http://localhost:7860", server_proc=None):
-    """Open native webview window in a subprocess (macOS can't mix tkinter + Cocoa).
-    Blocks until the subprocess exits, then terminates server if provided."""
-    # pywebview must run in its own process — macOS NSApplication can't restart
-    # after tkinter's event loop exits in the same process.
-    _webview_script = f'''
-import sys
-try:
-    import webview
-    w = webview.create_window("Coupled Manifold", "{url}",
-                              width=1200, height=860, min_size=(800, 600))
-    try:
-        webview.start(easy_drag=False)
-    except TypeError:
-        webview.start()
-except ImportError:
-    import subprocess
-    subprocess.Popen(["open", "{url}"])
-except Exception as e:
-    print(f"webview error: {{e}}", file=sys.stderr)
-    import subprocess
-    subprocess.Popen(["open", "{url}"])
-'''
-    try:
-        wv_proc = subprocess.Popen(
-            [PY, "-c", _webview_script],
-            cwd=DIR,
-        )
-        wv_proc.wait()  # blocks until webview window is closed
-    except Exception:
-        subprocess.Popen(["open", url])
-        return
-
-    # Window closed — stop server
-    if server_proc:
-        try:
-            server_proc.terminate()
-            server_proc.wait(timeout=4)
-        except Exception:
-            try:
-                server_proc.kill()
-            except Exception:
-                pass
+APP_URL = "http://localhost:7860"
 
 
 def _find_server_pid(port=7860):
@@ -152,7 +110,6 @@ class App(tk.Tk):
         self.configure(bg=BG)
         self.resizable(True, True)
         self._server_proc = None
-        self._ready_for_webview = False
         self._shutting_down = False
 
         # ttk style — darken progressbar
@@ -267,7 +224,7 @@ class App(tk.Tk):
         )
         self._stop_btn.pack(side=tk.LEFT)
 
-        # If server is already running, go straight to webview
+        # If server is already running, offer to open in browser
         if self._orphan_pid:
             self._launch_btn.config(
                 text="Open App",
@@ -335,17 +292,19 @@ class App(tk.Tk):
                 # Model already cached — just update status text, keep bar indeterminate
                 def _loading():
                     self._status.config(text="Loading model into memory…", fg=FG2)
-                self.after(0, _loading)
+                if not self._shutting_down:
+                    self.after(0, _loading)
                 return
 
             # Model is downloading — switch bar to determinate mode
             def _det():
                 self._pbar.config(mode="determinate", maximum=100, value=0)
-            self.after(0, _det)
+            if not self._shutting_down:
+                self.after(0, _det)
 
             while not self._dl_done.is_set():
                 time.sleep(2)
-                if self._dl_done.is_set():
+                if self._dl_done.is_set() or self._shutting_down:
                     break
                 try:
                     downloaded = sum(
@@ -360,13 +319,15 @@ class App(tk.Tk):
                             text=f"Downloading model  {d/1e9:.1f} / {total_bytes/1e9:.1f} GB  ({p}%)",
                             fg=FG2,
                         )
-                    self.after(0, _upd)
+                    if not self._shutting_down:
+                        self.after(0, _upd)
                     if downloaded >= total_bytes:
                         def _loading():
                             self._pbar.config(mode="indeterminate")
                             self._pbar.start(10)
                             self._status.config(text="Loading model into memory…", fg=FG2)
-                        self.after(0, _loading)
+                        if not self._shutting_down:
+                            self.after(0, _loading)
                         break
                 except Exception:
                     pass
@@ -416,10 +377,11 @@ class App(tk.Tk):
                     return
                 self._pbar.stop()
                 if ready:
-                    self._status.config(text="Running — opening app…", fg=GREEN)
-                    # Transition: close tkinter, open native webview
-                    self._ready_for_webview = True
-                    self.after(200, self.destroy)
+                    self._status.config(text="Server running — app open in browser", fg=GREEN)
+                    self._launch_btn.config(text="Open in Browser", state=tk.NORMAL,
+                                            command=self._open_webview)
+                    self._stop_btn.config(state=tk.NORMAL)
+                    webbrowser.open(APP_URL)
                 else:
                     self._status.config(text="Server didn't start — check console", fg=RED)
                     self._launch_btn.config(text="Retry", state=tk.NORMAL,
@@ -429,9 +391,8 @@ class App(tk.Tk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _open_webview(self):
-        """Transition from tkinter to native webview window."""
-        self._ready_for_webview = True
-        self.after(200, self.destroy)
+        """Open the app in the default browser."""
+        webbrowser.open(APP_URL)
 
     def _do_stop(self):
         if self._server_proc:
@@ -812,16 +773,19 @@ class App(tk.Tk):
                  font=("SF Pro Display", 11), bg=BG, fg=FG2,
                  wraplength=640, justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 10))
 
-        # Assistant name
+        # Assistant name (required — defaults to "Graceful")
         arow = tk.Frame(self._area, bg=BG)
         arow.pack(fill=tk.X, pady=4)
         tk.Label(arow, text="Name your assistant",
                  font=("SF Pro Display", 11, "bold"),
                  bg=BG, fg=FG, anchor=tk.W).pack(side=tk.LEFT)
         self._assistant_name = tk.StringVar(value="Graceful")
-        tk.Entry(arow, textvariable=self._assistant_name, font=MONO,
+        self._aname_entry = tk.Entry(arow, textvariable=self._assistant_name, font=MONO,
                  bg=BG3, fg=FG, insertbackground=GREEN,
-                 relief=tk.FLAT, bd=6, width=20).pack(side=tk.LEFT, padx=(10, 0))
+                 relief=tk.FLAT, bd=6, width=20)
+        self._aname_entry.pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(arow, text="(required)",
+                 font=("SF Pro Display", 10), bg=BG, fg=FG2).pack(side=tk.LEFT, padx=(6, 0))
 
         # User name
         nrow = tk.Frame(self._area, bg=BG)
@@ -897,7 +861,10 @@ class App(tk.Tk):
 
     def _save_persona(self):
         user_name = self._persona_name.get().strip()
-        assistant_name = self._assistant_name.get().strip() or "Graceful"
+        assistant_name = self._assistant_name.get().strip()
+        if not assistant_name:
+            assistant_name = "Graceful"
+            self._assistant_name.set(assistant_name)
         prompt_text = self._persona_text.get("1.0", tk.END).strip()
 
         # Save config.json
@@ -1044,7 +1011,6 @@ class App(tk.Tk):
     def _shutdown(self):
         """Clean shutdown — stop server, cancel bg threads, destroy window."""
         self._shutting_down = True
-        self._ready_for_webview = False
         # Stop the server
         if self._server_proc:
             try:
@@ -1070,14 +1036,3 @@ class App(tk.Tk):
 if __name__ == "__main__":
     app = App()
     app.mainloop()
-
-    # After tkinter exits — if server is ready, open native webview
-    if getattr(app, "_shutting_down", False):
-        # User explicitly quit — don't open webview, everything is cleaned up
-        pass
-    elif getattr(app, "_ready_for_webview", False) and app._server_proc:
-        _open_app_window("http://localhost:7860", server_proc=app._server_proc)
-    elif getattr(app, "_ready_for_webview", False):
-        # Orphan server case — just open webview, stop on close
-        _open_app_window("http://localhost:7860")
-        _kill_port_server()

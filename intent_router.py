@@ -142,6 +142,23 @@ def _classify_fast(msg: str) -> IntentDecision | None:
                 should_search=False, search_sources=None,
             )
 
+    # Self-referential / about-the-AI → meta (must come before factual patterns)
+    _self_ref = [
+        r'\b(how|why|what) do you (know|think|feel|decide|determine|assess|tell|judge)\b',
+        r'\bwhat do you (think|mean|know|feel|want|believe)\b',
+        r'\bdo you (think|know|believe|feel|agree|remember|understand)\b',
+        r'\bwhat are you\b',
+        r'\bhow are you\b',
+        r'\b(tell me about|describe|report on) (yourself|your\b.*(state|status|operation))',
+    ]
+    for pattern in _self_ref:
+        if re.search(pattern, ml):
+            return IntentDecision(
+                intent="meta", confidence="high",
+                reason="self-referential question about AI",
+                should_search=False, search_sources=None,
+            )
+
     # Meta / conversation-about → meta
     _meta = [
         r'\b(you said|you mentioned|earlier|above|last (response|message|answer))\b',
@@ -266,6 +283,22 @@ def _classify_fast(msg: str) -> IntentDecision | None:
             return IntentDecision(
                 intent="analysis", confidence="high",
                 reason="creative request",
+                should_search=False, search_sources=None,
+            )
+
+    # Math / computation → analysis (no search needed)
+    _math = [
+        r'^\s*\d+\s*[\+\-\*\/\%\^]\s*\d+',               # "2+2", "10 * 5"
+        r'^what\s+is\s+\d+\s*[\+\-\*\/\%\^]',             # "what is 2+2"
+        r'\b(calculate|compute|solve|simplify|evaluate)\b',
+        r'\b(math|equation|formula)\b',
+        r'\b\d+\s*(times|plus|minus|divided|multiplied)\b',
+    ]
+    for pattern in _math:
+        if re.search(pattern, ml):
+            return IntentDecision(
+                intent="analysis", confidence="high",
+                reason="math/computation — no search needed",
                 should_search=False, search_sources=None,
             )
 

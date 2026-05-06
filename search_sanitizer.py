@@ -306,6 +306,8 @@ def format_results_safe(results: list, consensus: dict = None, query: str = "") 
     for r in results:
         t      = trust_score(r)
         rel    = relevance_score(query, r)
+        if rel < 0.1 and query:
+            continue  # skip irrelevant results
         src    = r.get("source", "web")
         title  = r.get("title",  "")
         body   = r.get("body",   "")[:300]
