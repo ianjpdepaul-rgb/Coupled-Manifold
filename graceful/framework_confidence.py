@@ -14,7 +14,7 @@ import time
 
 
 def compute_confidence(trace, drift, flattery_score, trace_history,
-                       coupled_nudge=None):
+                       coupled_nudge=None, dance_coherence=None):
     """Compute framework confidence from channel agreement.
 
     trace:           float or None — Hessian trace (coupled or raw)
@@ -22,6 +22,7 @@ def compute_confidence(trace, drift, flattery_score, trace_history,
     flattery_score:  float — sycophancy score (0-1)
     trace_history:   list — recent trace values (for stability)
     coupled_nudge:   str or None — nudge string from coupled trace
+    dance_coherence: float or None — system profile dance coherence (0-1)
 
     Returns dict:
         confidence:  float 0-1
@@ -71,6 +72,17 @@ def compute_confidence(trace, drift, flattery_score, trace_history,
     stability = _compute_stability(trace_history)
     channels["stability"] = stability["label"]
 
+    # ── Channel 5: Dance coherence ─────────────────────────────
+    if dance_coherence is not None:
+        if dance_coherence >= 0.7:
+            channels["dance"] = "coherent"
+        elif dance_coherence >= 0.4:
+            channels["dance"] = "drifting"
+        else:
+            channels["dance"] = "incoherent"
+    else:
+        channels["dance"] = "building"
+
     # ── Disagreement detection ──────────────────────────────────
     # Healthy trace + high flattery = disagreement
     if channels["trace"] == "healthy" and channels["flattery"] in ("elevated", "sycophantic"):
@@ -87,6 +99,10 @@ def compute_confidence(trace, drift, flattery_score, trace_history,
     # Unstable trace + no other warning signals
     if channels["stability"] == "volatile" and channels["flattery"] == "authentic":
         disagreements.append("volatile_trace_no_flattery")
+
+    # Dance incoherent but trace healthy — system can't predict user despite good geometry
+    if channels.get("dance") == "incoherent" and channels["trace"] in ("healthy", "neutral"):
+        disagreements.append("dance_incoherent_trace_healthy")
 
     # ── Confidence score ────────────────────────────────────────
     score = 1.0
@@ -107,6 +123,12 @@ def compute_confidence(trace, drift, flattery_score, trace_history,
     # High flattery reduces confidence in the whole measurement
     if channels["flattery"] in ("elevated", "sycophantic"):
         score -= 0.1
+
+    # Dance incoherence reduces confidence — system can't model user
+    if channels.get("dance") == "incoherent":
+        score -= 0.1
+    elif channels.get("dance") == "drifting":
+        score -= 0.05
 
     # Coupled nudge magnitude as signal — large nudge = human state
     # strongly disagrees with model state

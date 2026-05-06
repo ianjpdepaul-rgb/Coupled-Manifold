@@ -64,6 +64,39 @@ class TestComputeConfidence:
             trace_history=[70, 75, 80], coupled_nudge="+18")
         assert result_with["confidence"] < result_without["confidence"]
 
+    def test_dance_coherence_channel_coherent(self):
+        result = compute_confidence(
+            trace=80, drift=0.1, flattery_score=0.05,
+            trace_history=[70, 75, 80], dance_coherence=0.8)
+        assert result["channels"]["dance"] == "coherent"
+
+    def test_dance_coherence_channel_incoherent(self):
+        result = compute_confidence(
+            trace=80, drift=0.1, flattery_score=0.05,
+            trace_history=[70, 75, 80], dance_coherence=0.2)
+        assert result["channels"]["dance"] == "incoherent"
+
+    def test_dance_incoherent_reduces_confidence(self):
+        result_no_dance = compute_confidence(
+            trace=80, drift=0.1, flattery_score=0.05,
+            trace_history=[70, 75, 80])
+        result_incoherent = compute_confidence(
+            trace=80, drift=0.1, flattery_score=0.05,
+            trace_history=[70, 75, 80], dance_coherence=0.2)
+        assert result_incoherent["confidence"] < result_no_dance["confidence"]
+
+    def test_dance_incoherent_trace_healthy_disagrees(self):
+        result = compute_confidence(
+            trace=80, drift=0.1, flattery_score=0.05,
+            trace_history=[70, 75, 80], dance_coherence=0.2)
+        assert "dance_incoherent_trace_healthy" in result["disagreements"]
+
+    def test_dance_none_is_building(self):
+        result = compute_confidence(
+            trace=80, drift=0.1, flattery_score=0.05,
+            trace_history=[70, 75, 80], dance_coherence=None)
+        assert result["channels"]["dance"] == "building"
+
 
 class TestStability:
     def test_few_traces_building(self):

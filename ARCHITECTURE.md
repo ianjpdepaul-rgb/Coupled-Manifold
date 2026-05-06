@@ -2,19 +2,23 @@
 
 ## Current State
 
-All core logic lives in `app.py` (~8,193 lines). Supporting modules exist but were
-extracted ad hoc. Test suite: 136 tests across 9 files (`tests/test_*.py`).
+All core logic lives in `app.py` (~7,896 lines). Supporting modules exist in
+`graceful/` (extracted progressively). Test suite: 256 tests across 13 files (`tests/test_*.py`).
 
 ### Source Files
 
 | File | Lines | Role |
 |---|---|---|
-| `app.py` | ~8,193 | Startup, model, trace, chat, UI, server |
+| `app.py` | ~7,896 | Startup, model, trace, chat, UI, server |
 | `graceful/config.py` | 64 | Constants, LR schedule, keys helper (Phase 2) |
 | `graceful/flattery.py` | 57 | Sycophancy scoring, greeting detection (Phase 2) |
-| `graceful/snobline.py` | 169 | Trace-based LoRA/Anti-LoRA controller (Phase 2) |
+| `graceful/snobline.py` | 261 | Trace-based LoRA/Anti-LoRA controller (Phase 2) |
 | `graceful/dual_adapter.py` | 39 | LoRA + Anti-LoRA nn.Module (Phase 2) |
-| `memory.py` | 1,043 | Corpus, history, identity model (already extracted) |
+| `graceful/coupled_trace.py` | 143 | Coupled trace monitoring (Move 2) |
+| `graceful/framework_confidence.py` | 215 | Multi-channel confidence (Move 3) |
+| `graceful/system_profile.py` | 412 | System response profiling, dance coherence (Move 1) |
+| `graceful/python_executor.py` | 503 | Safe code sandbox, /plot, /calc (Phase 3) |
+| `memory.py` | 1,129 | Corpus, history, identity model (already extracted) |
 | `search_stack.py` | 732 | Web search pipeline (already extracted) |
 | `model_router.py` | 335 | Query routing heuristics (already extracted) |
 | `trace_analytics.py` | 407 | Cross-session trace analysis (already extracted) |
@@ -121,7 +125,7 @@ search_sanitizer.py    # (unchanged)
 2. `temporal.py` -- needs memory + model
 3. `interoception.py` -- needs corpus embedder
 4. `experiment.py` -- needs chat function
-5. `python_executor.py` -- self-contained sandbox
+5. ~~`python_executor.py` -- self-contained sandbox~~ ✅ done
 
 **Phase 4 -- Chat orchestration and server:**
 1. `chat.py` -- the big one, depends on everything above
@@ -138,11 +142,13 @@ Module-level mutable state to wrap in classes:
 ## Testing Strategy
 
 - **Unit tests** (`tests/test_*.py`): import extracted modules directly
-  - `test_config.py` (13), `test_context_budget.py` (12), `test_flattery.py` (11),
+  - `test_config.py` (13), `test_context_budget.py` (12), `test_coupled_trace.py` (17),
+    `test_flattery.py` (11), `test_framework_confidence.py` (24),
     `test_ingest_concordance.py` (6), `test_model_router.py` (16),
-    `test_personality.py` (39), `test_search_sanitizer.py` (18),
-    `test_snobline.py` (15), `test_trace_analytics.py` (6)
-  - Total: 136 passing, 3 deselected (require MLX hardware)
+    `test_personality.py` (39), `test_python_executor.py` (24),
+    `test_search_sanitizer.py` (18), `test_snobline.py` (26),
+    `test_system_profile.py` (44), `test_trace_analytics.py` (6)
+  - Total: 256 passing, 3 deselected (require MLX hardware)
 - **Integration tests** (`tests/test_integration.py`): HTTP against running server
 - **Existing harnesses** (`test_smoke.py`, `test_full_ux.py`, etc.): kept as-is
 - All tests run via `python3 -m pytest tests/ -x -q`

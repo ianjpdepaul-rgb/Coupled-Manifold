@@ -751,6 +751,28 @@ input[type=range]{accent-color:var(--primary)!important;}
       <pre id="mem-out"></pre>
     </div>
     <div class="s-sec">
+      <div class="s-lbl">Co-evolution Profile</div>
+      <div class="s-sub">mirrored system + user profile — how this instance responds to you</div>
+      <div id="coevo-panel" style="font-family:var(--mono);font-size:.78em;color:var(--text2)">
+        <div style="display:flex;gap:24px;margin:8px 0">
+          <div style="flex:1">
+            <div style="color:var(--text3);font-size:.72em;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Your typing profile</div>
+            <div id="coevo-user">—</div>
+          </div>
+          <div style="flex:1">
+            <div style="color:var(--text3);font-size:.72em;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Instance response profile</div>
+            <div id="coevo-system">—</div>
+          </div>
+        </div>
+        <div id="coevo-chart" style="margin:8px 0;height:80px;position:relative;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>
+        <div id="coevo-metrics" style="font-size:.72em;color:var(--text3);margin:4px 0"></div>
+      </div>
+      <div class="s-row">
+        <button class="s-btn" id="coevo-refresh-btn">Refresh</button>
+        <button class="s-btn" id="coevo-reset-btn">Reset Profile</button>
+      </div>
+    </div>
+    <div class="s-sec">
       <div class="s-lbl">SnobLine Thresholds</div>
       <div class="s-sub">model-set routing thresholds — <span id="thresh-source" style="color:var(--text3)">percentile</span></div>
       <div id="thresh-current" style="font-size:.78em;color:var(--text2);font-family:var(--mono);margin:6px 0"></div>
@@ -2310,7 +2332,7 @@ document.addEventListener("DOMContentLoaded",function(){
   (function(){var lb=document.getElementById("learn-toggle-btn");if(lb)lb.onclick=async function(){var on=lb.textContent==="Off";lb.textContent=on?"On":"Off";lb.style.background=on?"rgba(74,222,128,.12)":"rgba(255,255,255,.04)";lb.style.borderColor=on?"rgba(74,222,128,.3)":"var(--border2)";lb.style.color=on?"#4ade80":"var(--text3)";await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({online_learning:on})});};})();
   document.querySelectorAll(".sug").forEach(function(s){s.onclick=function(){sendMessage(s.dataset.text);};});
   document.getElementById("sb-filter").oninput=function(){renderSessions(_allSessions);};
-  document.getElementById("settings-btn").onclick=function(){document.getElementById("settings-wrap").classList.add("open");};
+  document.getElementById("settings-btn").onclick=function(){document.getElementById("settings-wrap").classList.add("open");_loadCoevo();};
   document.getElementById("s-close").onclick=function(){document.getElementById("settings-wrap").classList.remove("open");};
   document.getElementById("settings-backdrop").onclick=function(){document.getElementById("settings-wrap").classList.remove("open");};
   function _tempMood(v){return v<0.05?"precise · auto-steer":v<0.4?"balanced · clear":v<0.8?"expressive · flowing":v<1.2?"creative · loose":v<1.6?"chaotic · surprising":"fever dream · handle with care";}
@@ -2389,6 +2411,59 @@ document.addEventListener("DOMContentLoaded",function(){
   document.getElementById("mem-btn").onclick=async function(){
     var r=await fetch("/api/mem_status"),d=await r.json();
     document.getElementById("mem-out").textContent=JSON.stringify(d,null,2);
+  };
+  // ── Co-evolution profile panel (Task 3 + Task 6) ──
+  function _renderCoevo(sp){
+    if(!sp){document.getElementById("coevo-user").textContent="No data yet";document.getElementById("coevo-system").textContent="No data yet";return;}
+    // User side — summary from identity (already in mem_status)
+    var uEl=document.getElementById("coevo-user");
+    uEl.innerHTML="<div>Turns observed: "+sp.total_turns+"</div><div>Sessions: "+sp.sessions+"</div>";
+    // System side
+    var sEl=document.getElementById("coevo-system");
+    var lines=[];
+    if(sp.response_length_avg!=null) lines.push("Avg response: "+sp.response_length_avg+" chars");
+    if(sp.response_length_range) lines.push("Range (2σ): "+sp.response_length_range);
+    if(sp.search_rate) lines.push("Search rate: "+sp.search_rate);
+    if(sp.clarification_rate) lines.push("Clarification: "+sp.clarification_rate);
+    if(sp.dominant_register) lines.push("Register: "+sp.dominant_register);
+    if(sp.dance_coherence!=null) lines.push("Dance coherence: "+(sp.dance_coherence*100).toFixed(0)+"%");
+    lines.push("Maturity: "+(sp.maturity*100).toFixed(0)+"%");
+    sEl.innerHTML=lines.map(function(l){return"<div>"+l+"</div>";}).join("");
+    // Metrics row
+    var mEl=document.getElementById("coevo-metrics");
+    var mp=sp.mode_preferences||{};var mpStr=Object.keys(mp).map(function(k){return k+": "+mp[k];}).join(" | ");
+    mEl.textContent=mpStr?"Mode preferences: "+mpStr:"";
+    // Chart — sparkline of response lengths from turn snapshots (Task 6)
+    var cEl=document.getElementById("coevo-chart");
+    cEl.innerHTML="";
+    var snaps=sp.turn_snapshots||[];
+    if(snaps.length<2){cEl.innerHTML="<div style='text-align:center;padding:30px 0;color:var(--text3)'>Need more turns for chart</div>";return;}
+    var maxR=Math.max.apply(null,snaps.map(function(s){return s.resp_len||0;}))||1;
+    var maxU=Math.max.apply(null,snaps.map(function(s){return s.user_len||0;}))||1;
+    var maxV=Math.max(maxR,maxU);
+    var w=cEl.offsetWidth||300,h=80;
+    var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
+    // Response length line (accent color)
+    var pts=snaps.map(function(s,i){var x=(i/(snaps.length-1))*w;var y=h-(s.resp_len/maxV)*h*0.9-4;return x.toFixed(1)+","+y.toFixed(1);});
+    svg+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="var(--accent,#f03468)" stroke-width="1.5" opacity="0.8"/>';
+    // User length line (dimmer)
+    var upts=snaps.map(function(s,i){var x=(i/(snaps.length-1))*w;var y=h-(s.user_len/maxV)*h*0.9-4;return x.toFixed(1)+","+y.toFixed(1);});
+    svg+='<polyline points="'+upts.join(" ")+'" fill="none" stroke="var(--text3,#666)" stroke-width="1" opacity="0.5"/>';
+    // Labels
+    svg+='<text x="4" y="12" fill="var(--accent,#f03468)" font-size="9" font-family="var(--mono)">response</text>';
+    svg+='<text x="4" y="22" fill="var(--text3,#666)" font-size="9" font-family="var(--mono)">user input</text>';
+    svg+='</svg>';
+    cEl.innerHTML=svg;
+  }
+  async function _loadCoevo(){
+    try{var r=await fetch("/api/mem_status"),d=await r.json();_renderCoevo(d.system_profile);}catch(e){}
+  }
+  document.getElementById("coevo-refresh-btn").onclick=_loadCoevo;
+  document.getElementById("coevo-reset-btn").onclick=async function(){
+    if(!confirm("Reset system profile? This clears all accumulated response patterns.")) return;
+    await fetch("/api/system_profile/reset",{method:"POST"});
+    _loadCoevo();
+    toast("System profile reset","ok");
   };
   var fi=document.getElementById("file-inp");
   document.getElementById("attach-btn").onclick=function(){fi.click();};

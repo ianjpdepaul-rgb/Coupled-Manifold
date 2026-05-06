@@ -357,6 +357,66 @@ IDENTITY_KEYS = [
     "writing_style", "recurring_themes", "tools", "raw_notes",
 ]
 
+# Stop-words for concept extraction — common English words that leak into the graph
+_CONCEPT_STOPWORDS = frozenset({
+    "about", "after", "again", "already", "also", "always", "because", "before",
+    "being", "below", "between", "border", "button", "certainly", "change", "click",
+    "color", "column", "continue", "could", "currently", "display", "doing", "during",
+    "element", "every", "example", "false", "first", "float", "focus", "follow",
+    "found", "function", "going", "height", "immediately", "include", "index",
+    "input", "inside", "instead", "issue", "itself", "large", "later", "length",
+    "level", "likely", "logically", "margin", "maybe", "might", "model", "never",
+    "number", "other", "output", "padding", "panel", "please", "point", "position",
+    "previous", "proceed", "prompt", "question", "quite", "radius", "really",
+    "reason", "regarding", "repeat", "response", "result", "right", "running",
+    "saying", "seems", "should", "since", "small", "solid", "something", "sorry",
+    "specific", "start", "state", "still", "string", "style", "their", "there",
+    "these", "thing", "think", "those", "through", "under", "until", "using",
+    "value", "where", "which", "while", "width", "within", "without", "would",
+    "write", "action", "class", "event", "check", "based", "makes", "means",
+    "needs", "order", "place", "given", "taken", "leave", "error", "block",
+    "frame", "build", "added", "clear", "close", "whole", "looks", "hence",
+    "above", "along", "break", "bring", "cause", "enter", "exist", "fully",
+    "great", "heavy", "human", "image", "known", "light", "local", "lower",
+    "match", "moved", "named", "noted", "often", "opens", "parts", "plain",
+    "raise", "range", "reach", "refer", "rough", "scene", "sense", "serve",
+    "shall", "shape", "shift", "short", "shown", "since", "space", "speak",
+    "spent", "stand", "stuck", "table", "taken", "terms", "third", "times",
+    "total", "touch", "track", "tried", "turns", "typed", "upper", "users",
+    "valid", "watch", "words", "works", "worth", "zeros", "apply", "avoid",
+    "basic", "begin", "could", "cover", "dozen", "draft", "early", "empty",
+    "equal", "exact", "extra", "final", "fixed", "fresh", "guess", "happy",
+    "hence", "ideal", "keeps", "later", "learn", "legal", "lines", "lived",
+    "major", "meant", "minor", "mixed", "never", "occur", "offer", "outer",
+    "owned", "paper", "patch", "pause", "phase", "piece", "print", "prior",
+    "proof", "quick", "quite", "ready", "shows", "solve", "sorry", "still",
+    "store", "stuff", "teach", "those", "title", "topic", "truly", "trust",
+    "twice", "unity", "usual", "voice", "waste", "which", "whole", "worry",
+    "worse", "yield", "young", "complex", "already", "another", "because",
+    "between", "certain", "clearly", "contain", "correct", "current", "default",
+    "defined", "despite", "display", "element", "enabled", "exactly", "example",
+    "explain", "follows", "general", "however", "include", "instead", "measure",
+    "mention", "nothing", "noticed", "obvious", "perhaps", "present", "produce",
+    "provide", "reading", "receive", "regular", "related", "remains", "replace",
+    "require", "results", "running", "section", "similar", "support", "through",
+    "thought", "trigger", "trouble", "turning", "updated", "version", "visible",
+    "whether", "working", "written", "various", "process", "message", "request",
+    "setting", "feature", "content", "pattern", "context", "looking", "summary",
+    "further", "exactly", "finally", "getting", "happens", "history", "nothing",
+    "overall", "problem", "project", "section", "several", "testing", "updated",
+    "waiting", "calling", "changed", "checked", "confirm", "details", "exactly",
+    "keeping", "missing", "passing", "reading", "removed", "sending", "started",
+    "stopped", "thought", "writing", "approach",
+    # CSS/HTML leaks
+    "border", "padding", "margin", "radius", "height", "width", "color", "style",
+    "display", "position", "overflow", "opacity", "transition", "background",
+    "cursor", "outline", "resize", "bottom", "center", "column", "inline",
+    "repeat", "scroll", "shadow", "source", "weight", "letter", "spacing",
+    # Framework artifacts
+    "response", "confidence", "threshold", "coupled",
+})
+
+
 class IdentityModel:
     """
     Persistent identity model. Extracted from conversation + corpus.
@@ -381,6 +441,30 @@ class IdentityModel:
                 self.data[k] = saved.get(k, [])
             self.data["node_weights"] = saved.get("node_weights", {})
             self.data["edge_counts"] = saved.get("edge_counts", {})
+            self._clean_concepts()
+
+    def _clean_concepts(self):
+        """Remove stop-words from concept list and prune their weights/edges."""
+        before = len(self.data.get("concepts", []))
+        self.data["concepts"] = [
+            c for c in self.data.get("concepts", [])
+            if c.lower() not in _CONCEPT_STOPWORDS
+        ]
+        removed = before - len(self.data["concepts"])
+        if removed > 0:
+            # Prune node_weights for removed concepts
+            valid = set(c.lower() for c in self.data["concepts"] + self.data.get("thinkers", []))
+            self.data["node_weights"] = {
+                k: v for k, v in self.data["node_weights"].items()
+                if k.lower() in valid
+            }
+            # Prune edge_counts where either endpoint was removed
+            self.data["edge_counts"] = {
+                k: v for k, v in self.data["edge_counts"].items()
+                if all(p.lower() in valid for p in k.split("|||"))
+            }
+            self._save()
+            print(f"  Identity: cleaned {removed} stop-word concepts, pruned weights/edges")
 
     def _save(self):
         self.path.write_text(json.dumps(self.data, indent=2))
@@ -430,6 +514,8 @@ class IdentityModel:
                 for _w in _words[:20]:
                     _wl = _w.lower()
                     if _wl in self.data["concepts"] or _wl in self.data["thinkers"]:
+                        continue
+                    if _wl in _CONCEPT_STOPWORDS:
                         continue
                     _wv = self._st_enc.encode([_wl], show_progress_bar=False)[0]
                     _norm = max(_np.linalg.norm(_wv), 1e-6)  # safe division
