@@ -13,25 +13,18 @@ Pure function — no side effects, no state.
 def build_apparatus_block(state, prev_state=None):
     """Build the APPARATUS STATE section for the interoceptive block.
 
+    Compressed format: single-line sections, conditional inclusion.
+    When prev_state exists and nothing changed, returns minimal stub.
+
     state: dict with keys:
-        temperature     — float, current sampling temperature
-        top_p           — float, current top_p
-        threshold_low   — float, low threshold value
-        threshold_high  — float, high threshold value
-        threshold_source — str, "model-set" or "percentile"
-        threshold_set_turn — int or None, turn when model last set thresholds
-        current_turn    — int, current turn number
-        anti_lora_active — bool, whether anti-LoRA is currently engaged
-        anti_lora_last_turn — int or None, turn when anti-LoRA last fired
-        fw_confidence   — float 0-1, framework confidence score
-        fw_provisional  — bool, whether measurement is provisional
-        fw_disagreements — list of str, active disagreements
-        fw_channels     — dict, per-channel assessments
+        temperature, top_p, threshold_low, threshold_high,
+        threshold_source, threshold_set_turn, current_turn,
+        anti_lora_active, anti_lora_last_turn,
+        fw_confidence, fw_provisional, fw_disagreements, fw_channels
 
-    prev_state: dict or None — previous turn's state dict for change detection.
+    prev_state: dict or None — previous turn's snapshot for change detection.
 
-    Returns: (block_str, state_snapshot) where state_snapshot should be
-             passed as prev_state on the next turn.
+    Returns: (block_str, state_snapshot)
     """
     temp = state.get("temperature", 0.7)
     top_p = state.get("top_p", 0.95)
@@ -76,6 +69,10 @@ def build_apparatus_block(state, prev_state=None):
             if old is not None and old != new:
                 changes.append(f"{label} {old} → {new}")
 
+    # If nothing changed and we have a previous state, return minimal stub
+    if prev_state and not changes:
+        return "APPARATUS: unchanged", snapshot
+
     # Threshold age
     if t_set_turn is not None and cur_turn > t_set_turn:
         thresh_age = f"{t_source} {cur_turn - t_set_turn} turns ago"
@@ -93,30 +90,33 @@ def build_apparatus_block(state, prev_state=None):
     # Framework confidence
     conf_pct = f"{fw_conf:.0%}"
     conf_label = "PROVISIONAL" if fw_prov else "CONFIDENT"
-    reasons = ", ".join(d.replace("_", "-") for d in fw_disagree[:3]) if fw_disagree else "none"
+
+    # Reasons: only include when confidence < 50% (saves space when confident)
+    if fw_conf < 0.50 and fw_disagree:
+        reasons_str = " reasons=" + ",".join(d.replace("_", "-") for d in fw_disagree[:3])
+    else:
+        reasons_str = ""
 
     # Channel agreement summary
     chan_groups = {}
     for ch, val in fw_channels.items():
         chan_groups.setdefault(val, []).append(ch)
-    # Find channels that agree (same assessment)
     agreeing = []
     for val, chs in chan_groups.items():
         if len(chs) >= 2 and val not in ("unavailable", "building"):
             agreeing.append("+".join(chs))
     channels_str = " agreeing".join([", ".join(agreeing)]) + " agreeing" if agreeing else "mixed"
 
+    # Compressed single-line format
     lines = []
     if changes:
         lines.append("APPARATUS CHANGED THIS TURN: " + "; ".join(changes))
-    lines.extend([
-        "APPARATUS STATE:",
-        f"  sampling: temperature={temp:.2f} top_p={top_p:.2f}",
-        f"  thresholds: low={t_low:.0f} high={t_high:.0f} ({thresh_age})",
-        f"  anti_lora: {anti_str}",
-        f"  framework_confidence: {conf_pct} {conf_label}",
-        f"    reasons: {reasons}",
-        f"  channels: {channels_str}",
-    ])
+    lines.append(
+        f"APPARATUS: t={temp:.2f} p={top_p:.2f}"
+        f" | thresh={t_low:.0f}/{t_high:.0f}({thresh_age})"
+        f" | anti_lora={anti_str}"
+        f" | conf={conf_pct} {conf_label}{reasons_str}"
+        f" | ch={channels_str}"
+    )
 
     return "\n".join(lines), snapshot

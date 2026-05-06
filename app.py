@@ -1636,27 +1636,73 @@ def build_interoceptive_block():
     _apparatus_block, _prev_apparatus_state = _build_apparatus_block(
         _apparatus_state, _prev_apparatus_state or None)
 
-    lines = [
-        "[INTEROCEPTIVE STATE]",
-        f"Heartbeat: {rhythm}",
-        f"Momentum:  {momentum} (slope {slope:+.1f})",
-        f"Mode:      {ctrl.mode} | Switches: {len(ctrl.log)}",
-        f"Anxiety:   {anxiety} | Patho: {patho}/{CONSEC_PATHO_LIMIT}",
-        f"Drift:     {drift_s} from user register",
-        _thresh_line,
-        f"Memory:    {cumulative_str}",
-    ] + ([_sp_line] if _sp_line else []) + [
-        _apparatus_block,
-        "[KNOWN FAILURE MODES]",
-        "Flattery: low trace + low drift + no switches = locked on approval.",
-        "Attractor: sustained low trace below detection. Interoceptive theatre: performing states.",
-        "[STABILITY]",
-    ] + [f"  {n}" for n in notes] + [
-        "Instruction: if flattery risk elevated, introduce genuine friction. Disagree where geometry supports it.",
-        "Threshold adjustment available: <tool:adjust_thresholds>{\"low\": N, \"high\": N, \"reason\": \"...\"}</tool:adjust_thresholds> (low: -200 to 0, high: 0 to 50)",
-        "[END INTEROCEPTIVE STATE]",
+    # ── Compressed interoceptive block with priority-based section dropping ──
+    # Priority (highest = dropped first):
+    #   P5: known failure modes (static, only first turn)
+    #   P4: instructions (static, only first turn)
+    #   P3: system profile
+    #   P2: apparatus block
+    #   P1: coupled trace (heartbeat, momentum, anxiety, drift, thresholds, stability)
+    # Hard ceiling: 1600 chars (~400 tokens)
+    _INTERO_CEILING = 1600
+
+    # Core trace section — compressed single-line format
+    _core = (
+        f"[INTEROCEPTIVE STATE]\n"
+        f"Heartbeat:{rhythm} | Mom:{momentum}({slope:+.1f}) | {ctrl.mode} sw={len(ctrl.log)}\n"
+        f"Anxiety:{anxiety} p={patho}/{CONSEC_PATHO_LIMIT} | Drift:{drift_s} | Mem:{cumulative_str}\n"
+        f"{_thresh_line}"
+    )
+
+    # Stability notes — only non-default
+    _stab = ""
+    if notes and notes != ["Geometry stable. Maintain."]:
+        _stab = "\n[STABILITY] " + " | ".join(notes)
+
+    # System profile — P3
+    _sp = ("\n" + _sp_line) if _sp_line else ""
+
+    # Apparatus — P2
+    _app = "\n" + _apparatus_block if _apparatus_block else ""
+
+    # Static sections — P5/P4: only on first 2 turns
+    _is_early = turn_count[0] <= 2
+    _failure_modes = ""
+    _instructions = ""
+    if _is_early:
+        _failure_modes = (
+            "\n[FAILURE MODES] Flattery: low trace+low drift+no switches=locked on approval. "
+            "Attractor: sustained low trace below detection."
+        )
+        _instructions = (
+            "\nInstruction: if flattery elevated, introduce friction. "
+            "Thresholds adjustable via <tool:adjust_thresholds>."
+        )
+
+    # Assemble with priority dropping
+    _end = "\n[END INTEROCEPTIVE STATE]"
+    # Start with everything, drop lowest priority first
+    _sections = [
+        (5, _failure_modes),
+        (4, _instructions),
+        (3, _sp),
+        (2, _app),
+        (1, _stab),
     ]
-    return "\n".join(lines)
+    # Always include core + end
+    _block = _core + _end
+    _budget_left = _INTERO_CEILING - len(_block)
+
+    # Add sections in priority order (P1 first = most important)
+    _included = []
+    for _pri, _sec in sorted(_sections, key=lambda x: x[0]):
+        if _sec and len(_sec) <= _budget_left:
+            _included.append((_pri, _sec))
+            _budget_left -= len(_sec)
+
+    # Insert sections into block (before [END])
+    _extras = "".join(s for _, s in sorted(_included, key=lambda x: x[0]))
+    return _core + _extras + _end
 
 
 
@@ -7537,34 +7583,60 @@ async def api_analytics():
 
 @api.get("/api/knowledge_graph")
 async def api_knowledge_graph():
-    """Return a simple knowledge graph from identity concepts + session co-occurrence."""
-    _concepts = list(mem.identity.data.get("concepts", []))[:20]
+    """Return a knowledge graph from identity concepts + session co-occurrence.
+    Normalizes corpus vs conversation weights so conversation nodes are visible.
+    """
+    _all_concepts = list(mem.identity.data.get("concepts", []))
     _thinkers = list(mem.identity.data.get("thinkers", []))
 
     # Word frequency fallback from recent session if no concepts
-    if not _concepts and session_log:
+    if not _all_concepts and session_log:
         from memory import _CONCEPT_STOPWORDS
         _freq: dict = {}
         for _t in session_log[-20:]:
             for _w in re.findall(r'\b[a-zA-Z]{4,}\b', (_t.get("user", "") + " " + _t.get("response", "")).lower()):
                 if _w not in _CONCEPT_STOPWORDS:
                     _freq[_w] = _freq.get(_w, 0) + 1
-        _concepts = [w for w, _ in sorted(_freq.items(), key=lambda x: x[1], reverse=True)[:20]]
+        _all_concepts = [w for w, _ in sorted(_freq.items(), key=lambda x: x[1], reverse=True)[:20]]
+
+    # Sort concepts by node_weight descending, then take top 30 (was [:20] unordered)
+    _nw = mem.identity.data.get("node_weights", {})
+    _all_concepts.sort(key=lambda c: _nw.get(c, 0), reverse=True)
+    _concepts = _all_concepts[:30]
 
     # Build nodes: concepts + thinkers
     _all_terms = list(dict.fromkeys(_concepts + _thinkers))  # dedup, preserve order
 
-    # Start from persistent weights (survive across sessions)
-    _node_weight = dict(mem.identity.data.get("node_weights", {}))
-    # Layer on current session mentions
+    # ── Normalized weight: blend corpus + conversation so conversation nodes visible ──
+    _corpus_w = dict(mem.identity.data.get("corpus_weights", {}))
+    _conv_w = dict(mem.identity.data.get("conversation_weights", {}))
+
+    # Layer on current session mentions as conversation weight
     for _t in session_log[-50:]:
         _text = (_t.get("user", "") + " " + _t.get("response", "")).lower()
         for _term in _all_terms:
             if _term.lower() in _text:
-                _node_weight[_term] = _node_weight.get(_term, 0) + 1
+                _conv_w[_term] = _conv_w.get(_term, 0) + 1
+
+    # Normalize each source to [0, 1] range, then combine
+    _max_corpus = max(_corpus_w.values()) if _corpus_w else 1
+    _max_conv = max(_conv_w.values()) if _conv_w else 1
+
+    def _blended_weight(term):
+        cw = _corpus_w.get(term, 0) / max(_max_corpus, 1)
+        vw = _conv_w.get(term, 0) / max(_max_conv, 1)
+        # Conversation weighted 3x higher than corpus
+        blended = 0.25 * cw + 0.75 * vw
+        # Scale to usable range [1, 20] for D3 rendering
+        return max(1, round(blended * 20))
+
+    # Threshold lowered from >= 2 to >= 1 — all mentioned nodes appear
+    _node_weight = {}
+    for t in _all_terms:
+        _node_weight[t] = _blended_weight(t)
 
     nodes = [{"id": t, "label": t, "weight": _node_weight.get(t, 1)}
-             for t in _all_terms if _node_weight.get(t, 0) >= 2]
+             for t in _all_terms if _node_weight.get(t, 0) >= 1]
     _node_ids = {n["id"] for n in nodes}
 
     # Start from persistent edge co-occurrences

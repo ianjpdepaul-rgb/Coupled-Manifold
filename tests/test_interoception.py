@@ -29,14 +29,13 @@ class TestApparatusStateInContext:
     def test_sampling_params_present(self):
         state = self._make_state(temperature=0.30, top_p=0.95)
         block, _ = build_apparatus_block(state)
-        assert "temperature=0.30" in block
-        assert "top_p=0.95" in block
+        assert "t=0.30" in block
+        assert "p=0.95" in block
 
     def test_thresholds_present(self):
         state = self._make_state(threshold_low=-17, threshold_high=30)
         block, _ = build_apparatus_block(state)
-        assert "low=-17" in block
-        assert "high=30" in block
+        assert "thresh=-17/30" in block
 
     def test_threshold_source_percentile(self):
         state = self._make_state(threshold_source="percentile")
@@ -66,10 +65,11 @@ class TestApparatusStateInContext:
     def test_anti_lora_never_fired(self):
         state = self._make_state(anti_lora_active=False, anti_lora_last_turn=None)
         block, _ = build_apparatus_block(state)
-        assert "anti_lora: inactive" in block
+        assert "anti_lora=inactive" in block
         assert "last fired" not in block
 
     def test_framework_confidence_present(self):
+        # confidence < 50% so reasons appear
         state = self._make_state(fw_confidence=0.40, fw_provisional=True,
                                  fw_disagreements=["trace_healthy_but_drifting",
                                                     "volatile_trace_no_flattery"])
@@ -86,8 +86,6 @@ class TestApparatusStateInContext:
         assert "CONFIDENT" in block
 
     def test_channels_agreeing(self):
-        # trace and drift both "healthy"/"on-topic" won't agree since different values,
-        # but if two channels share the same assessment they should be noted
         state = self._make_state(
             fw_channels={"trace": "healthy", "drift": "healthy",
                          "flattery": "authentic", "stability": "stable"})
@@ -105,12 +103,12 @@ class TestApparatusStateInContext:
         """Comprehensive check that every required section appears."""
         state = self._make_state()
         block, _ = build_apparatus_block(state)
-        assert "APPARATUS STATE:" in block
-        assert "sampling:" in block
-        assert "thresholds:" in block
-        assert "anti_lora:" in block
-        assert "framework_confidence:" in block
-        assert "channels:" in block
+        assert "APPARATUS:" in block
+        assert "t=" in block
+        assert "thresh=" in block
+        assert "anti_lora=" in block
+        assert "conf=" in block
+        assert "ch=" in block
 
 
 class TestChangeAnnotation:
@@ -230,7 +228,9 @@ class TestModelCanAcknowledgeApparatus:
         assert "8 turns ago" in block
 
     def test_actual_disagreement_reasons_in_block(self):
+        # confidence < 50% so reasons appear
         state = self._make_state(
+            fw_confidence=0.40,
             fw_disagreements=["trace_healthy_but_drifting", "volatile_trace_no_flattery"])
         block, _ = build_apparatus_block(state)
         assert "trace-healthy-but-drifting" in block
@@ -242,3 +242,67 @@ class TestModelCanAcknowledgeApparatus:
         assert snap["temperature"] == 0.30
         assert snap["top_p"] == 0.95
         assert snap["anti_lora_active"] is False
+
+
+class TestCompressedFormat:
+    """Fix 1: verify compressed block stays within budget."""
+
+    def _make_state(self, **overrides):
+        base = {
+            "temperature": 0.70,
+            "top_p": 0.95,
+            "threshold_low": -17,
+            "threshold_high": 30,
+            "threshold_source": "percentile",
+            "threshold_set_turn": None,
+            "current_turn": 10,
+            "anti_lora_active": False,
+            "anti_lora_last_turn": None,
+            "fw_confidence": 0.85,
+            "fw_provisional": False,
+            "fw_disagreements": [],
+            "fw_channels": {"trace": "healthy", "drift": "on-topic",
+                            "flattery": "authentic", "stability": "stable"},
+        }
+        base.update(overrides)
+        return base
+
+    def test_interoception_under_ceiling(self):
+        """Apparatus block alone must be under 400 chars (~100 tokens)."""
+        state = self._make_state()
+        block, _ = build_apparatus_block(state)
+        assert len(block) < 400, f"Apparatus block is {len(block)} chars, exceeds 400"
+
+    def test_unchanged_fields_omitted(self):
+        """When nothing changed between turns, return minimal stub."""
+        state = self._make_state()
+        _, snap = build_apparatus_block(state)
+        block, _ = build_apparatus_block(state, prev_state=snap)
+        assert block == "APPARATUS: unchanged"
+        assert len(block) < 30
+
+    def test_high_confidence_omits_reasons(self):
+        """When confidence >= 50%, reasons are omitted to save space."""
+        state = self._make_state(fw_confidence=0.85,
+                                 fw_disagreements=["trace_healthy_but_drifting"])
+        block, _ = build_apparatus_block(state)
+        assert "reasons" not in block
+        assert "trace-healthy-but-drifting" not in block
+
+    def test_low_confidence_includes_reasons(self):
+        """When confidence < 50%, reasons ARE included."""
+        state = self._make_state(fw_confidence=0.40,
+                                 fw_disagreements=["trace_healthy_but_drifting"])
+        block, _ = build_apparatus_block(state)
+        assert "reasons=" in block
+        assert "trace-healthy-but-drifting" in block
+
+    def test_conversation_history_preserved(self):
+        """Context budget allocates enough for history even with interoception."""
+        from context_budget import ContextBudget
+        cb = ContextBudget(12000)
+        b = cb.allocate("tell me more about that idea", False, False, 5)
+        # History should get the lion's share — at least 2000 chars
+        assert b["history"] >= 2000
+        # Interoception should not exceed 350
+        assert b["interoception"] <= 350

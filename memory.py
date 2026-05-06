@@ -428,6 +428,8 @@ class IdentityModel:
         self.data["raw_notes"] = []
         self.data["node_weights"] = {}
         self.data["edge_counts"] = {}
+        self.data["corpus_weights"] = {}
+        self.data["conversation_weights"] = {}
         self._load()
 
     def _load(self):
@@ -441,6 +443,8 @@ class IdentityModel:
                 self.data[k] = saved.get(k, [])
             self.data["node_weights"] = saved.get("node_weights", {})
             self.data["edge_counts"] = saved.get("edge_counts", {})
+            self.data["corpus_weights"] = saved.get("corpus_weights", {})
+            self.data["conversation_weights"] = saved.get("conversation_weights", {})
             self._clean_concepts()
 
     def _clean_concepts(self):
@@ -469,10 +473,13 @@ class IdentityModel:
     def _save(self):
         self.path.write_text(json.dumps(self.data, indent=2))
 
-    def observe(self, turn_text: str):
+    def observe(self, turn_text: str, source: str = "conversation"):
         """
         Light pattern extraction from a single turn.
         Accumulates signals over time without overwriting.
+
+        source: "corpus" or "conversation" — tracked separately so
+                conversation-derived nodes aren't invisible against corpus bulk.
         """
         text = turn_text.lower()
 
@@ -533,8 +540,11 @@ class IdentityModel:
         # Accumulate persistent node weights + edge co-occurrences for Borges Map
         _all_terms = self.data["concepts"] + self.data["thinkers"]
         _present = [t for t in _all_terms if t.lower() in text]
+        # Source-specific weight tracking
+        _sw_key = "corpus_weights" if source == "corpus" else "conversation_weights"
         for t in _present:
             self.data["node_weights"][t] = self.data["node_weights"].get(t, 0) + 1
+            self.data[_sw_key][t] = self.data[_sw_key].get(t, 0) + 1
         for _i in range(len(_present)):
             for _j in range(_i + 1, len(_present)):
                 _ekey = "|||".join(sorted([_present[_i], _present[_j]]))
@@ -922,7 +932,7 @@ class Memory:
         n = len(self.corpus.chunks)
         print(f"  Identity: seeding from {n} corpus chunks …")
         for chunk in self.corpus.chunks:
-            self.identity.observe(chunk["text"])
+            self.identity.observe(chunk["text"], source="corpus")
         sentinel.write_text(f"seeded {n} chunks\n")
         print(f"  Identity: seeded — {len(self.identity.data.get('thinkers', []))} thinkers, "
               f"{len(self.identity.data.get('concepts', []))} concepts, "
@@ -951,7 +961,8 @@ class Memory:
         self.history.append(role, content)
         # identity.observe runs up to 20 sentence-transformers encode calls — move to background
         # so it doesn't add 0.5-1s of latency before generation starts
-        threading.Thread(target=self.identity.observe, args=(content,), daemon=True).start()
+        threading.Thread(target=self.identity.observe, args=(content,),
+                         kwargs={"source": "conversation"}, daemon=True).start()
 
     def index_corpus(self, path: str):
         """Index a single file into the corpus."""
