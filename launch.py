@@ -3,7 +3,7 @@ COUPLED MANIFOLD — GUI Launcher & Installer
 Handles first-run setup wizard and normal app launching.
 Uses only stdlib tkinter so it works before the venv exists.
 """
-import os, sys, json, time, threading, subprocess, webbrowser, socket
+import os, sys, json, time, threading, subprocess, socket
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
@@ -61,6 +61,24 @@ def mem_summary() -> str:
         return f"{n_chunks} corpus chunks  ·  {n_sess} sessions"
     except Exception:
         return ""
+
+
+def _open_app_window(url="http://localhost:7860"):
+    """Open URL in a standalone Chrome app window (no tabs, no address bar).
+    Falls back to default browser if Chrome not found."""
+    chrome_paths = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    ]
+    for path in chrome_paths:
+        if os.path.isfile(path):
+            subprocess.Popen([path, f"--app={url}"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+    # Fallback: macOS open command
+    import webbrowser
+    webbrowser.open(url)
 
 
 def _find_server_pid(port=7860):
@@ -223,8 +241,8 @@ class App(tk.Tk):
         # If server is already running, switch Launch to Open Browser
         if self._orphan_pid:
             self._launch_btn.config(
-                text="Open Browser",
-                command=lambda: webbrowser.open("http://localhost:7860"),
+                text="Open App",
+                command=lambda: _open_app_window(),
             )
 
         # Utility row — data folder, settings, memory stats
@@ -359,11 +377,11 @@ class App(tk.Tk):
                 if ready:
                     self._status.config(text="Running at localhost:7860", fg=GREEN)
                     self._launch_btn.config(
-                        text="Open Browser", state=tk.NORMAL,
-                        command=lambda: webbrowser.open("http://localhost:7860"),
+                        text="Open App", state=tk.NORMAL,
+                        command=lambda: _open_app_window(),
                     )
                     self._stop_btn.config(state=tk.NORMAL)
-                    webbrowser.open("http://localhost:7860")
+                    _open_app_window()
                 else:
                     self._status.config(text="Server didn't start — check console", fg=RED)
                     self._launch_btn.config(text="Retry", state=tk.NORMAL,
