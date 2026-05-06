@@ -1779,38 +1779,63 @@ def _tool_adjust_thresholds(arg: str) -> tuple[str, str]:
 # Permission levels: auto (free), prompt (user confirms), explicit (user must ask)
 _registry.register("search", _tool_search,
                    description="current events, facts, people",
-                   usage_example="query", permission="auto")
+                   usage_example="query", permission="auto",
+                   use_when="User asks about current events, recent news, or facts you're unsure about",
+                   skip_when="Topic is well-covered in training data and isn't time-sensitive")
 _registry.register("find", _tool_find,
                    description="search the user's indexed documents",
-                   usage_example="query", permission="auto")
+                   usage_example="query", permission="auto",
+                   use_when="User asks about their own documents, notes, or previously ingested content",
+                   skip_when="User is asking about general knowledge, not their personal corpus")
 _registry.register("run", _tool_run,
                    description="execute Python, math, data",
-                   usage_example="python code", permission="prompt")
+                   usage_example="python code", permission="prompt",
+                   use_when="User asks to compute, plot, graph, analyze data, or run code",
+                   skip_when="User asks a conceptual question about code or math you can answer directly")
 _registry.register("fetch", _tool_fetch,
                    description="fetch and extract text from a URL",
-                   usage_example="https://example.com", permission="prompt")
+                   usage_example="https://example.com", permission="prompt",
+                   use_when="User provides a URL and wants its content read or summarized",
+                   skip_when="No URL mentioned, or user is asking about a topic rather than a specific page")
 _registry.register("think", _tool_think,
                    description="private scratchpad (not shown)",
-                   usage_example="reasoning", permission="auto")
+                   usage_example="reasoning", permission="auto",
+                   use_when="Complex multi-step reasoning that benefits from explicit working",
+                   skip_when="Simple conversational reply or straightforward answer")
 _registry.register("calculate", calculate,
                    description="evaluate math symbolically (SymPy)",
-                   usage_example="integrate(x**2, x)", permission="auto")
+                   usage_example="integrate(x**2, x)", permission="auto",
+                   use_when="User asks for precise symbolic math (integrals, derivatives, exact values)",
+                   skip_when="Simple arithmetic you can do in your head, or user asks conceptually about math")
 _registry.register("adjust_thresholds", _tool_adjust_thresholds,
                    description="adjust your own SnobLine routing thresholds",
                    usage_example='{"low": -120, "high": 8, "reason": "..."}',
-                   permission="auto")
+                   permission="auto",
+                   use_when="Measurement data suggests routing thresholds need recalibration",
+                   skip_when="Thresholds are working well — don't adjust without evidence of drift")
 _registry.register("audit_recent", audit_recent,
                    description="review recent tool usage log",
-                   usage_example="10", permission="auto")
+                   usage_example="10", permission="auto",
+                   use_when="Something specifically suggests recent behavior needs review — user feedback, "
+                            "framework failures surfaced, channel disagreements detected",
+                   skip_when="Don't invoke as conversational filler or to demonstrate capability. "
+                             "Normal conversation does not warrant self-audit")
 _registry.register("read_session", read_session,
                    description="show session metadata (turns, model, thresholds)",
-                   usage_example="", permission="auto")
+                   usage_example="", permission="auto",
+                   use_when="User asks about session state, or you need session info to answer a question",
+                   skip_when="User is asking a normal question — don't check session state unprompted")
 _registry.register("take_note", take_note,
                    description="save a note for cross-turn memory",
-                   usage_example="user prefers concise answers", permission="auto")
+                   usage_example="user prefers concise answers", permission="auto",
+                   use_when="Information arises that's worth preserving across turns (user preference, "
+                            "important context, decision made)",
+                   skip_when="Routine conversation — don't note every exchange")
 _registry.register("check_disagreement", check_disagreement,
                    description="show framework disagreement signals and confidence",
-                   usage_example="", permission="auto")
+                   usage_example="", permission="auto",
+                   use_when="User asks about framework state, or you detect inconsistency in measurements",
+                   skip_when="Normal conversation — don't check disagreement signals as a reflex")
 
 # ── Stage 2: Self-modification tools ─────────────────────────────────────────
 _mod_tracker = ModificationTracker(DATA_DIR)

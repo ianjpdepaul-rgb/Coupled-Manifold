@@ -53,11 +53,14 @@ class ToolRegistry:
         self._log_path = os.path.join(log_dir, "tool_calls.jsonl") if log_dir else None
         self._data_dir = data_dir
         self._overrides = _load_permission_overrides(data_dir)
+        self._turn_call_count: int = 0
+        self._current_turn: int = -1
 
     def register(self, name: str, handler: ToolHandler, *,
                  description: str, usage_example: str = "",
-                 permission: str = "auto"):
-        """Register a tool by name with a permission level."""
+                 permission: str = "auto",
+                 use_when: str = "", skip_when: str = ""):
+        """Register a tool by name with a permission level and discretion hints."""
         if permission not in PERMISSION_LEVELS:
             raise ValueError(f"Invalid permission '{permission}', must be one of {PERMISSION_LEVELS}")
         self._tools[name] = {
@@ -65,6 +68,8 @@ class ToolRegistry:
             "description": description,
             "usage_example": usage_example,
             "permission": permission,
+            "use_when": use_when,
+            "skip_when": skip_when,
         }
 
     def get_permission(self, name: str) -> str:
@@ -80,6 +85,9 @@ class ToolRegistry:
         """Reload permission overrides from disk (call after user changes settings)."""
         self._overrides = _load_permission_overrides(self._data_dir)
 
+    # Hard cap on tool calls per turn — prevents runaway tool invocation
+    MAX_CALLS_PER_TURN = 3
+
     def dispatch(self, name: str, arg: str, *, turn_id: int = 0,
                  user_requested: bool = False,
                  user_confirmed: bool | None = None) -> tuple[str, str]:
@@ -89,7 +97,25 @@ class ToolRegistry:
         - auto: executes immediately
         - prompt: returns TOOL_PENDING sentinel unless user_confirmed=True
         - explicit: refuses unless user_requested=True or user_confirmed=True
+
+        Per-turn cap: logs warning at >1 call, hard refuses at >MAX_CALLS_PER_TURN.
         """
+        # Per-turn call counter
+        if turn_id != self._current_turn:
+            self._current_turn = turn_id
+            self._turn_call_count = 0
+        self._turn_call_count += 1
+
+        if self._turn_call_count > self.MAX_CALLS_PER_TURN:
+            msg = f"Tool cap reached ({self.MAX_CALLS_PER_TURN}/turn). '{name}' not executed."
+            self._log(name, arg, msg, 0, turn_id,
+                      permission="cap", user_confirmed=None, error="per_turn_cap")
+            return (msg, "")
+
+        if self._turn_call_count > 1:
+            self._log("_warning", "", f"Multiple tool calls in turn {turn_id} (call #{self._turn_call_count})",
+                      0, turn_id, permission="info", user_confirmed=None, error=None)
+
         entry = self._tools.get(name)
         if entry is None:
             self._log(name, arg, f"Unknown tool: {name}", 0, turn_id,
@@ -136,8 +162,27 @@ class ToolRegistry:
     def tool_prompt(self) -> str:
         """Generate the system prompt fragment describing all registered tools."""
         lines = [
-            "Respond in the same language the user is writing in. Default to English if unclear. "
-            "You have tools. Emit a tag on its own line to use one:"
+            "Respond in the same language the user is writing in. Default to English if unclear.",
+            "",
+            "You have tools available, but your default is to NOT use them. "
+            "Most turns are conversational. Direct response is correct for most messages.",
+            "",
+            "A tool call is warranted ONLY when:",
+            "1. You lack information needed to answer accurately and a tool can supply it",
+            "2. The user explicitly asks for something a tool does (search, calculate, fetch, run code)",
+            "3. Accuracy matters and your knowledge might be stale or wrong",
+            "4. You need to act on persistent state (modify config, save memory, mark disagreement)",
+            "",
+            "A tool call is NOT warranted when:",
+            "1. The user is greeting, joking, or making small talk",
+            "2. The answer is in your training data and the topic isn't time-sensitive",
+            "3. The user is asking about prior turns (you already have that context)",
+            "4. The user is asking your opinion or for analysis",
+            "5. You're tempted to call a self-observation tool just because it exists",
+            "",
+            "When uncertain whether a tool is needed, default to not calling it.",
+            "",
+            "Available tools (emit a tag on its own line to use one):",
         ]
         for name, meta in self._tools.items():
             # Don't advertise explicit-only tools to the model — they need user request
@@ -150,7 +195,13 @@ class ToolRegistry:
                 lines.append(f"<tool:{name}>{example}</tool:{name}>  — {desc}")
             else:
                 lines.append(f"<tool:{name}>...</tool:{name}>  — {desc}")
+            # Per-tool discretion guidance
+            if meta["use_when"]:
+                lines.append(f"  USE WHEN: {meta['use_when']}")
+            if meta["skip_when"]:
+                lines.append(f"  SKIP WHEN: {meta['skip_when']}")
 
+        lines.append("")
         lines.append(
             "After a tool tag, STOP. Results are injected. Incorporate them naturally. "
             "Max 3 tool calls per reply. Never mention tool use to the user."
@@ -189,6 +240,8 @@ class ToolRegistry:
                 "description": meta["description"],
                 "permission": self.get_permission(name),
                 "default_permission": meta["permission"],
+                "use_when": meta.get("use_when", ""),
+                "skip_when": meta.get("skip_when", ""),
             })
         return out
 

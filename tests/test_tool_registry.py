@@ -412,3 +412,87 @@ class TestNewTools:
     def test_calculate_empty(self):
         text, _ = calculate("")
         assert "No expression" in text
+
+
+class TestToolDiscretion:
+    """Verify discretion framing and per-turn call cap."""
+
+    def test_tool_prompt_has_discretion_framing(self):
+        reg = ToolRegistry()
+        reg.register("echo", lambda x: ("", ""), description="echo",
+                     use_when="user asks to echo", skip_when="user is greeting")
+        prompt = reg.tool_prompt()
+        assert "default is to NOT use them" in prompt
+        assert "warranted ONLY when" in prompt
+        assert "NOT warranted when" in prompt
+
+    def test_use_when_appears_in_prompt(self):
+        reg = ToolRegistry()
+        reg.register("search", lambda x: ("", ""), description="web search",
+                     use_when="user asks about current events",
+                     skip_when="topic is in training data")
+        prompt = reg.tool_prompt()
+        assert "USE WHEN: user asks about current events" in prompt
+        assert "SKIP WHEN: topic is in training data" in prompt
+
+    def test_empty_use_skip_not_shown(self):
+        reg = ToolRegistry()
+        reg.register("echo", lambda x: ("", ""), description="echo")
+        prompt = reg.tool_prompt()
+        assert "USE WHEN:" not in prompt
+        assert "SKIP WHEN:" not in prompt
+
+    def test_per_turn_cap_enforced(self):
+        reg = ToolRegistry()
+        for i in range(5):
+            reg.register(f"t{i}", lambda a: ("ok", ""), description=f"tool {i}")
+        # First 3 calls succeed
+        for i in range(3):
+            text, _ = reg.dispatch(f"t{i}", "x", turn_id=42)
+            assert text == "ok"
+        # 4th call is refused
+        text, _ = reg.dispatch("t3", "x", turn_id=42)
+        assert "cap reached" in text.lower()
+
+    def test_cap_resets_on_new_turn(self):
+        reg = ToolRegistry()
+        for i in range(5):
+            reg.register(f"t{i}", lambda a: ("ok", ""), description=f"tool {i}")
+        # Exhaust cap on turn 1
+        for i in range(3):
+            reg.dispatch(f"t{i}", "x", turn_id=1)
+        text, _ = reg.dispatch("t3", "x", turn_id=1)
+        assert "cap reached" in text.lower()
+        # New turn resets
+        text, _ = reg.dispatch("t0", "x", turn_id=2)
+        assert text == "ok"
+
+    def test_multi_call_warning_logged(self):
+        with tempfile.TemporaryDirectory() as td:
+            reg = ToolRegistry(log_dir=td)
+            reg.register("a", lambda x: ("ok", ""), description="a")
+            reg.register("b", lambda x: ("ok", ""), description="b")
+            reg.dispatch("a", "x", turn_id=10)
+            reg.dispatch("b", "x", turn_id=10)  # 2nd call in turn → warning
+
+            log_path = os.path.join(td, "tool_calls.jsonl")
+            with open(log_path) as f:
+                entries = [json.loads(line) for line in f]
+            warnings = [e for e in entries if e["tool"] == "_warning"]
+            assert len(warnings) == 1
+            assert "Multiple tool calls" in warnings[0]["result"]
+
+    def test_info_includes_use_skip(self):
+        reg = ToolRegistry()
+        reg.register("echo", lambda x: ("", ""), description="echo",
+                     use_when="when needed", skip_when="when not needed")
+        info = reg.info()
+        assert info[0]["use_when"] == "when needed"
+        assert info[0]["skip_when"] == "when not needed"
+
+    def test_info_defaults_empty_strings(self):
+        reg = ToolRegistry()
+        reg.register("echo", lambda x: ("", ""), description="echo")
+        info = reg.info()
+        assert info[0]["use_when"] == ""
+        assert info[0]["skip_when"] == ""
