@@ -751,6 +751,16 @@ input[type=range]{accent-color:var(--primary)!important;}
       <pre id="mem-out"></pre>
     </div>
     <div class="s-sec">
+      <div class="s-lbl">SnobLine Thresholds</div>
+      <div class="s-sub">model-set routing thresholds — <span id="thresh-source" style="color:var(--text3)">percentile</span></div>
+      <div id="thresh-current" style="font-size:.78em;color:var(--text2);font-family:var(--mono);margin:6px 0"></div>
+      <div id="thresh-history" style="font-size:.72em;color:var(--text3);font-family:var(--mono);max-height:120px;overflow-y:auto;margin:4px 0"></div>
+      <div class="s-row">
+        <button class="s-btn" id="thresh-refresh-btn">Refresh</button>
+        <button class="s-btn" id="thresh-reset-btn">Reset to Auto</button>
+      </div>
+    </div>
+    <div class="s-sec">
       <div class="s-lbl">Export Session Data</div>
       <div class="s-sub">download traces, logs, and session data as a zip</div>
       <button class="s-btn pri" id="export-data-btn" onclick="if(confirm('Export session data including conversation history?')) window.location.href='/api/export'">Export</button>
@@ -2529,7 +2539,38 @@ document.addEventListener("DOMContentLoaded",function(){
   }
   document.getElementById("corpus-refresh-btn").onclick=loadCorpusFiles;
   // Auto-load when settings opens
-  document.getElementById("settings-btn").addEventListener("click",function(){loadCorpusFiles();},true);
+  document.getElementById("settings-btn").addEventListener("click",function(){loadCorpusFiles();loadThresholdHistory();},true);
+
+  // ── Threshold history panel ─────────────────────────────────────
+  async function loadThresholdHistory(){
+    try{
+      var r=await fetch("/api/threshold_history");
+      var d=await r.json();
+      var src=document.getElementById("thresh-source");
+      var cur=document.getElementById("thresh-current");
+      var hist=document.getElementById("thresh-history");
+      if(src)src.textContent=d.source||"percentile";
+      if(cur){
+        if(d.current_low!==null)cur.textContent="low: "+d.current_low+" / high: "+d.current_high;
+        else cur.textContent="auto (percentile-based)";
+      }
+      if(hist&&d.history&&d.history.length){
+        hist.innerHTML=d.history.slice(-8).reverse().map(function(h){
+          var ts=h.timestamp?new Date(h.timestamp*1000).toLocaleTimeString():"?";
+          var badge=h.applied?"<span style='color:#4ade80'>applied</span>":"<span style='color:#ffb74d'>deferred</span>";
+          return ts+" — low "+h.new_low+" / high "+h.new_high+" "+badge+"<br><span style='color:var(--text3)'>"+((h.reason||"").substring(0,60))+"</span>";
+        }).join("<br>");
+      }else if(hist){hist.textContent="no adjustments yet";}
+    }catch(e){}
+  }
+  var _thRefresh=document.getElementById("thresh-refresh-btn");
+  if(_thRefresh)_thRefresh.onclick=loadThresholdHistory;
+  var _thReset=document.getElementById("thresh-reset-btn");
+  if(_thReset)_thReset.onclick=async function(){
+    if(!confirm("Reset model-set thresholds to percentile-based routing?"))return;
+    await fetch("/api/threshold_reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    loadThresholdHistory();
+  };
 
   // ── Token counter wiring ──────────────────────────────────────
   var tokenCounter=document.getElementById("token-counter");

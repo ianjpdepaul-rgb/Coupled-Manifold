@@ -2,7 +2,13 @@
 Coupled Manifold — SnobLine controller.
 Trace-based learning gate: routes between LoRA and Anti-LoRA
 based on Hessian trace percentile thresholds.
+
+Citational regulation: the model can write to its own thresholds
+via set_thresholds(). Adjustments are logged and can be deferred
+when the geometry is in crisis (anti-LoRA active or patho >= 2).
 """
+import time
+
 import numpy as np
 
 from .config import CONSEC_PATHO_LIMIT, TREND_WINDOW, TREND_THRESHOLD
@@ -28,6 +34,79 @@ class SnobLine:
         self.session_anchor = None   # mean of first 5 traces — fixed session baseline
         self.consec_flattery = 0     # consecutive turns with flattery_score > 0.8
         self.manual_mode = None      # set by /adapter mode — overrides automatic routing
+        # Citational regulation — model-writable thresholds
+        self.model_low  = None       # absolute trace threshold for pathology (None = use percentile)
+        self.model_high = None       # absolute trace threshold for healthy (None = use percentile)
+        self.thresholds_history = []  # list of dicts logging every set_thresholds call
+        self._threshold_queue = []   # deferred adjustments when geometry is in crisis
+
+    def set_thresholds(self, low: int, high: int, reason: str) -> dict:
+        """Model-callable: adjust routing thresholds.
+
+        low:    pathology threshold (range -200 to 0)
+        high:   healthy threshold (range 0 to 50)
+        reason: required explanation string
+
+        Returns a dict with applied status and details.
+        """
+        # Validate ranges
+        low = max(-200, min(0, int(low)))
+        high = max(0, min(50, int(high)))
+        if low >= high:
+            return {"applied": False, "defer_reason": "low must be less than high",
+                    "low": low, "high": high}
+
+        old_low = self.model_low
+        old_high = self.model_high
+        record = {
+            "timestamp": time.time(),
+            "old_low": old_low, "old_high": old_high,
+            "new_low": low, "new_high": high,
+            "reason": reason,
+        }
+
+        # Defer if geometry is in crisis
+        if self.mode == "anti" or self.consec_patho >= 2:
+            defer_reason = ("anti-LoRA active" if self.mode == "anti"
+                            else f"patho {self.consec_patho}/3")
+            record["applied"] = False
+            record["defer_reason"] = defer_reason
+            self._threshold_queue.append(record)
+            self.thresholds_history.append(record)
+            return record
+
+        # Apply immediately
+        self.model_low = low
+        self.model_high = high
+        record["applied"] = True
+        record["defer_reason"] = None
+        self.thresholds_history.append(record)
+        return record
+
+    def reset_thresholds(self):
+        """Clear model-set thresholds, revert to percentile-based routing."""
+        if self.model_low is not None or self.model_high is not None:
+            self.thresholds_history.append({
+                "timestamp": time.time(),
+                "old_low": self.model_low, "old_high": self.model_high,
+                "new_low": None, "new_high": None,
+                "reason": "user reset", "applied": True, "defer_reason": None,
+            })
+        self.model_low = None
+        self.model_high = None
+        self._threshold_queue.clear()
+
+    def _drain_threshold_queue(self):
+        """Apply the most recent queued threshold adjustment (if any)."""
+        if not self._threshold_queue:
+            return
+        # Only apply the last one — earlier ones are superseded
+        last = self._threshold_queue[-1]
+        self.model_low = last["new_low"]
+        self.model_high = last["new_high"]
+        last["applied"] = True
+        last["defer_reason"] = "applied after recovery"
+        self._threshold_queue.clear()
 
     def step(self, trace, turn):
         """Step the SnobLine controller with a new trace measurement.
@@ -95,6 +174,7 @@ class SnobLine:
             self.anti_count += 1
             if self.anti_count >= self.max_anti:
                 self.mode, self.anti_count = "lora", 0
+                self._drain_threshold_queue()
                 self.log.append({"turn": turn, "to": "lora", "reason": "max_duration"})
                 return self.mode
         else:
@@ -102,8 +182,15 @@ class SnobLine:
         if len(self.history) < 3:
             return self.mode
         recent = self.history[-self.window:]
-        low  = float(np.percentile(recent, self.low_pct))
-        high = float(np.percentile(recent, self.high_pct))
+        # Use model-set thresholds if available, else percentile-computed
+        if self.model_low is not None:
+            low = float(self.model_low)
+        else:
+            low = float(np.percentile(recent, self.low_pct))
+        if self.model_high is not None:
+            high = float(self.model_high)
+        else:
+            high = float(np.percentile(recent, self.high_pct))
         if self.mode == "lora" and trace < low:
             self.mode, self.anti_count = "anti", 0
             self.consec_patho += 1
@@ -112,6 +199,7 @@ class SnobLine:
         elif self.mode == "anti" and trace > high:
             self.mode, self.anti_count = "lora", 0
             self.consec_patho = 0
+            self._drain_threshold_queue()
             self.log.append({"turn": turn, "to": "lora", "reason": "recovered"})
         else:
             if self.mode == "lora":
@@ -141,10 +229,14 @@ class SnobLine:
         return False, None
 
     def get_thresholds(self):
+        if self.model_low is not None and self.model_high is not None:
+            return float(self.model_low), float(self.model_high)
         if len(self.history) < 3:
             return 0, 0
         recent = self.history[-self.window:]
-        return float(np.percentile(recent, self.low_pct)), float(np.percentile(recent, self.high_pct))
+        low = float(self.model_low) if self.model_low is not None else float(np.percentile(recent, self.low_pct))
+        high = float(self.model_high) if self.model_high is not None else float(np.percentile(recent, self.high_pct))
+        return low, high
 
     def get_anti_strength(self, trace) -> float:
         """

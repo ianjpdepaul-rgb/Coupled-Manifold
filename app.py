@@ -2053,6 +2053,13 @@ def build_interoceptive_block():
     _steer, _steer_txt = should_suggest_redirect()
     if _steer:             notes.append(_steer_txt)
     if not notes:          notes.append("Geometry stable. Maintain.")
+    # Threshold affordance — show current thresholds and adjustment tool
+    _lo, _hi = ctrl.get_thresholds()
+    _thresh_source = "model-set" if ctrl.model_low is not None else "percentile"
+    _thresh_line = f"Thresholds: low {_lo:.0f} / high {_hi:.0f} ({_thresh_source})"
+    if ctrl._threshold_queue:
+        _thresh_line += f" | {len(ctrl._threshold_queue)} adjustment(s) queued"
+
     lines = [
         "[INTEROCEPTIVE STATE]",
         f"Heartbeat: {rhythm}",
@@ -2060,6 +2067,7 @@ def build_interoceptive_block():
         f"Mode:      {ctrl.mode} | Switches: {len(ctrl.log)}",
         f"Anxiety:   {anxiety} | Patho: {patho}/{CONSEC_PATHO_LIMIT}",
         f"Drift:     {drift_s} from user register",
+        _thresh_line,
         f"Memory:    {cumulative_str}",
         "[KNOWN FAILURE MODES]",
         "Flattery: low trace + low drift + no switches = locked on approval.",
@@ -2067,6 +2075,7 @@ def build_interoceptive_block():
         "[STABILITY]",
     ] + [f"  {n}" for n in notes] + [
         "Instruction: if flattery risk elevated, introduce genuine friction. Disagree where geometry supports it.",
+        "Threshold adjustment available: <tool:adjust_thresholds>{\"low\": N, \"high\": N, \"reason\": \"...\"}</tool:adjust_thresholds> (low: -200 to 0, high: 0 to 50)",
         "[END INTEROCEPTIVE STATE]",
     ]
     return "\n".join(lines)
@@ -2278,6 +2287,7 @@ _TOOL_SYSTEM = (
     "<tool:run>python code</tool:run>  — execute Python, math, data\n"
     "<tool:think>reasoning</tool:think> — private scratchpad (not shown)\n"
     "After a tool tag, STOP. Results are injected. Incorporate them naturally. "
+    "<tool:adjust_thresholds>{\"low\": -120, \"high\": 8, \"reason\": \"...\"}</tool:adjust_thresholds> — adjust your own SnobLine routing thresholds\n"
     "Max 3 tool calls per reply. Never mention tool use to the user.\n\n"
     "MATH AND CODE RULE: When asked to compute, plot, graph, or write code — act immediately.\n"
     "Pick reasonable defaults (k=3, 2D, 200 points, etc). NEVER ask for clarification — just do it.\n"
@@ -2332,6 +2342,31 @@ def execute_tool(name: str, arg: str) -> tuple[str, str]:
             return (" ".join(_p.p)[:2000], "")
         elif name == "think":
             return ("[Internal reasoning recorded]", "")
+        elif name == "adjust_thresholds":
+            try:
+                _parsed = json.loads(arg)
+                _low = int(_parsed.get("low", -100))
+                _high = int(_parsed.get("high", 6))
+                _reason = str(_parsed.get("reason", "unspecified"))
+                _result = ctrl.set_thresholds(_low, _high, _reason)
+                # Log to disk
+                try:
+                    _log_path = f"{DATA_DIR}/logs/thresholds_changes.jsonl"
+                    os.makedirs(os.path.dirname(_log_path), exist_ok=True)
+                    _log_entry = {
+                        "turn_id": turn_count[0],
+                        **_result,
+                    }
+                    with open(_log_path, "a") as _lf:
+                        _lf.write(json.dumps(_log_entry, default=str) + "\n")
+                except Exception:
+                    pass
+                if _result.get("applied"):
+                    return (f"Thresholds adjusted: low={_result['new_low']} high={_result['new_high']} — {_reason}", "")
+                else:
+                    return (f"Threshold adjustment queued (deferred: {_result.get('defer_reason', '?')}). Will apply when geometry recovers.", "")
+            except (json.JSONDecodeError, ValueError, TypeError) as _parse_e:
+                return (f"adjust_thresholds: invalid JSON — {_parse_e}", "")
     except Exception as _e:
         return (f"Tool error ({name}): {_e}", "")
     return (f"Unknown tool: {name}", "")
@@ -5503,8 +5538,10 @@ plt.tight_layout()
         + (f" | a_str {_anti_str:.3f}" if mode == "anti" else "")
         + f"<br>"
         f"<b>TREND</b>: {ti} {trend_name} (avg {avg_str} | slope {slope_str})<br>"
-        f"<b>THRESHOLDS</b>: low {low_t_str} / high {high_t_str} | "
-        f"<b>SWITCHES</b>: {len(ctrl_active.log)}<br>"
+        f"<b>THRESHOLDS</b>: low {low_t_str} / high {high_t_str}"
+        + (f" <span style='color:#64b5f6'>(model-set)</span>" if ctrl_active.model_low is not None else "")
+        + (f" <span style='color:#ffb74d'>({len(ctrl_active._threshold_queue)} queued)</span>" if ctrl_active._threshold_queue else "")
+        + f" | <b>SWITCHES</b>: {len(ctrl_active.log)}<br>"
         f"<b>SEARCH</b>: {'🌐' if searched else 'OFF'}"
         + (f" | 🔍 searched: {_last_web_query}" if searched and _last_web_query else "")
         + f" | <b>TOOLS</b>: {', '.join(_tools_used) if _tools_used else '—'} | "
@@ -7006,6 +7043,35 @@ async def api_settings(request: Request):
             except Exception:
                 pass
     return JSONResponse({"ok": True})
+
+@api.get("/api/threshold_history")
+async def api_threshold_history():
+    """Return threshold adjustment history."""
+    return JSONResponse({
+        "history": ctrl.thresholds_history,
+        "current_low": ctrl.model_low,
+        "current_high": ctrl.model_high,
+        "source": "model-set" if ctrl.model_low is not None else "percentile",
+        "queue_length": len(ctrl._threshold_queue),
+    })
+
+@api.post("/api/threshold_reset")
+async def api_threshold_reset():
+    """User override: reset model-set thresholds to percentile-based."""
+    ctrl.reset_thresholds()
+    try:
+        _log_path = f"{DATA_DIR}/logs/thresholds_changes.jsonl"
+        os.makedirs(os.path.dirname(_log_path), exist_ok=True)
+        with open(_log_path, "a") as _lf:
+            _lf.write(json.dumps({
+                "turn_id": turn_count[0],
+                "timestamp": time.time(),
+                "action": "user_reset",
+                "applied": True,
+            }, default=str) + "\n")
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "message": "Thresholds reset to percentile-based routing"})
 
 @api.get("/api/starter_prompts")
 async def api_starter_prompts():
