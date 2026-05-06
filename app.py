@@ -26,6 +26,7 @@ from graceful.config import (
 from graceful.flattery import compute_flattery_score, _is_greeting_msg, _lexical_match, _AGREEMENT_WORDS, _FRICTION_WORDS, _GREETING_WORDS
 from graceful.snobline import SnobLine, _ABSOLUTE_FLOOR, _SUSTAINED_FLOOR, _SUSTAINED_COUNT, _ANCHOR_WINDOW, _ANCHOR_DRIFT_LIMIT, _ANCHOR_TERMINATE
 from graceful.dual_adapter import DualAdapter
+from graceful import coupled_trace as _coupled_trace
 
 # ═══════════════════════════════════════════════════
 # STARTUP GUARDS  (fail fast, clear messages)
@@ -1502,6 +1503,7 @@ _dream_injection  = [None]   # T4-1: free ideation injection
 _scaffold_injection = [None] # T2-5: scaffold topic injection
 _reading_injection  = [None] # T4-3: reading list injection
 _response_length  = ["M"]    # T2-1: S/M/L brevity control from frontend
+_human_state      = [{}]     # Move 2: coupled trace — human behavioral state from frontend
 
 # ── Personality prompt loading ────────────────────────────────────────────────
 # Cascade: user personality file → default personality file → shipped default
@@ -5302,6 +5304,13 @@ plt.tight_layout()
 
     trace_time = time.time() - t1
 
+    # Coupled trace — combine model measurement with human behavioral state (Move 2)
+    _model_trace_raw = trace  # preserve uncoupled value for medulla
+    _hs_snap = _human_state[0]  # snapshot before clearing
+    _human_state[0] = {}        # clear so regen/edit don't inherit stale state
+    if trace is not None and _hs_snap:
+        trace = _coupled_trace.couple(trace, _hs_snap)
+
     # Step SnobLine — None trace is a no-op (no state change, current mode kept)
     mode = ctrl_active.step(trace, turn_count[0])
     set_mode(mode, model_active)
@@ -5518,6 +5527,10 @@ plt.tight_layout()
     _nov_words  = re.findall(r'\b\w+\b', response.lower())
     _nov_score  = round(len(set(_nov_words)) / max(len(_nov_words), 1), 2)
 
+    # Coupled trace summary for medulla (Move 2)
+    _coupled_nudge_str, _coupled_detail = _coupled_trace.summarize(
+        _model_trace_raw, _hs_snap, trace)
+
     # Medulla
     icon  = "🟢" if mode == "lora" else "🔴"
     state = "CONSTRUCTIVE" if mode == "lora" else "ROUGHENING"
@@ -5534,8 +5547,13 @@ plt.tight_layout()
         f"<b>MODEL</b>: {model_label} ({'large-only' if pair.small is None and pair.mode == 'mixed' else pair.mode})"
         + (f" <span style='color:#888'>{_route_note}</span>" if _route_note else "")
         + f" | <b>TONE</b>: {_tone}<br>"
-        f"<b>STATE</b>: {state} | <b>TRACE</b>: {'?' if not _trace_valid(trace) else f'{trace:.1f}'} <code>{bar}</code>"
+        f"<b>STATE</b>: {state} | <b>TRACE</b>: {'?' if not _trace_valid(trace) else f'{trace:.1f}'}"
+        + (f" <span style='color:#64b5f6'>(raw {'?' if not _trace_valid(_model_trace_raw) else f'{_model_trace_raw:.1f}'})</span>"
+           if _coupled_nudge_str else "")
+        + f" <code>{bar}</code>"
         + (f" | a_str {_anti_str:.3f}" if mode == "anti" else "")
+        + (f"<br><b>COUPLED</b>: {_coupled_nudge_str} ({_coupled_detail})"
+           if _coupled_nudge_str else "")
         + f"<br>"
         f"<b>TREND</b>: {ti} {trend_name} (avg {avg_str} | slope {slope_str})<br>"
         f"<b>THRESHOLDS</b>: low {low_t_str} / high {high_t_str}"
@@ -5584,6 +5602,8 @@ plt.tight_layout()
         ),
         "anti_str": _anti_str if mode == "anti" else None,
         "response_similarity": _resp_sim,
+        "model_trace_raw": round(_model_trace_raw, 1) if _trace_valid(_model_trace_raw) else None,
+        "coupled_nudge": _coupled_nudge_str,
     })
     if len(session_log) > 500:
         session_log[:] = session_log[-500:]
@@ -5603,6 +5623,8 @@ plt.tight_layout()
             all(t < _SUSTAINED_FLOOR for t in ctrl_active.all_traces[-_SUSTAINED_COUNT:])
         ),
         "anti_str": _anti_str if mode == "anti" else None,
+        "model_trace_raw": round(_model_trace_raw, 1) if _trace_valid(_model_trace_raw) else None,
+        "coupled_nudge": _coupled_nudge_str,
     })
     _session_snap = {"session_id": session_id, "model": MODEL,
                      "turns": list(session_log), "switches": list(ctrl_active.log)}
@@ -6232,6 +6254,7 @@ async def api_chat(request: Request):
     rl = (data.get("response_length") or "M").upper()
     if rl in ("S", "M", "L"):
         _response_length[0] = rl
+    _human_state[0] = data.get("human_state") or {}
     stop_event.clear()
     _trace_abort.set()             # signal bg trace to skip its expensive HVP pass
     _user_request_pending[0] += 1  # signal bg tasks: user request queued

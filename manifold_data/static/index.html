@@ -1110,6 +1110,22 @@ var _pendingStop=false,_lastSentMsg="";
 function _persistSession(source){var sid=activeSid,len=history.length;console.log("[persist] source="+source+" sid="+sid+" history.length="+len);if(!sid)return;try{sessionStorage.setItem("graceful_history_"+sid,JSON.stringify(history));sessionStorage.setItem("graceful_sid",sid);}catch(e){}}
 // Input history (↑/↓ navigation)
 var _inputHistory=[],_inputHistIdx=-1,_inputDraft="";
+// Coupled trace — human state tracker (Move 2)
+var _hs={typing_start:0,last_key:0,keystrokes:0,backspaces:0,pauses:[],read_start:0,scroll_ups:0};
+function _hsReset(){_hs={typing_start:0,last_key:0,keystrokes:0,backspaces:0,pauses:[],read_start:0,scroll_ups:0};}
+function _hsCompute(){
+  var ks=_hs.keystrokes;
+  var typing_ms=_hs.typing_start>0&&_hs.last_key>_hs.typing_start?_hs.last_key-_hs.typing_start:0;
+  var edit_ratio=ks>0?_hs.backspaces/ks:0;
+  var vp=_hs.pauses.filter(function(p){return p>0&&p<30000;});
+  vp.sort(function(a,b){return a-b;});
+  var median_pause=vp.length>0?vp[Math.floor(vp.length/2)]:0;
+  var max_pause=vp.length>0?vp[vp.length-1]:0;
+  var read_ms=_hs.read_start>0&&_hs.typing_start>_hs.read_start?_hs.typing_start-_hs.read_start:0;
+  return {typing_duration_ms:typing_ms,keystroke_count:ks,edit_ratio:Math.round(edit_ratio*100)/100,
+          median_pause_ms:Math.round(median_pause),max_pause_ms:Math.round(max_pause),
+          read_time_ms:Math.round(read_ms),scroll_ups:_hs.scroll_ups};
+}
 var CMDS=[
   /* ── Memory ─────────────────────────────────────────── */
   {cmd:"/who",        desc:"Identity model — who I am",                    icon:"&#x1F9F8;",group:"Memory"   },
@@ -1784,8 +1800,9 @@ async function sendMessage(text){
   setGen(true);showTyping(text);
   var accum="",gotFirst=false;
   try{
+    var _hsPayload=_hsCompute();_hsReset();
     var res=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({message:text,history:history.slice(0,-1)})});
+      body:JSON.stringify({message:text,history:history.slice(0,-1),human_state:_hsPayload})});
     if(!res.ok)throw new Error("HTTP "+res.status);
     var reader=res.body.getReader(),dec=new TextDecoder(),buf="";
     while(true){
@@ -1799,6 +1816,7 @@ async function sendMessage(text){
           if(!gotFirst){hideTyping();gotFirst=true;}
           accum+=item.v;updateStream(accum);
         }else if(item.t==="done"){
+          _hs.read_start=Date.now();
           var fc=item.history&&item.history.length?item.history[item.history.length-1].content:accum;
           var clean=(fc||accum).replace(/ ?\u258c/g,"");
           history.push({role:"assistant",content:clean});
@@ -2580,6 +2598,33 @@ document.addEventListener("DOMContentLoaded",function(){
       tokenCounter.textContent=chars>10?"~"+Math.round(chars/3.8)+" tokens":"";
     });
   }
+
+  // ════════════════════════════════════════════════════════════════
+  // COUPLED TRACE — human state instrumentation (Move 2)
+  // Keystroke tracking, pause distribution, scroll-up gestures
+  // ════════════════════════════════════════════════════════════════
+  (function(){
+    var msgEl=document.getElementById("msg");
+    msgEl.addEventListener("keydown",function(e){
+      if(e.key==="Enter"||e.key==="Shift"||e.key==="Control"||e.key==="Meta"||e.key==="Alt")return;
+      var now=Date.now();
+      if(_hs.typing_start===0)_hs.typing_start=now;
+      if(_hs.last_key>0){var gap=now-_hs.last_key;if(gap>20)_hs.pauses.push(gap);}
+      _hs.last_key=now;
+      _hs.keystrokes++;
+      if(e.key==="Backspace"||e.key==="Delete")_hs.backspaces++;
+    });
+    var chatEl=document.getElementById("messages");
+    if(chatEl){
+      var _scrollDebounce=0;
+      chatEl.addEventListener("wheel",function(e){
+        if(e.deltaY<0){
+          var now=Date.now();
+          if(now-_scrollDebounce>300){_hs.scroll_ups++;_scrollDebounce=now;}
+        }
+      },{passive:true});
+    }
+  })();
 
   // ── Scroll-to-bottom button ───────────────────────────────────
   // (existing scroll-btn already wired above; extend with display toggle)
