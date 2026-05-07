@@ -851,29 +851,54 @@ class LayeredHistory:
             "Do not claim to have done research, written papers, or managed anything.",
             "Respond helpfully and directly. Never roleplay as the user.",
         ]
-        if self.summaries and cap >= 8 and not self._session_start_ts:
+        if self.summaries and cap >= 8:
             summary_block = "\n".join(self.summaries[-2:])
             system_parts.append(f"\n[CONVERSATION HISTORY SUMMARY]\n{summary_block}")
         msgs.append({"role": "system", "content": " ".join(system_parts)})
 
         # Semantic recall from full archive (if query provided and index populated)
+        # Retrieves from ALL history — current session AND past sessions —
+        # so the model has contextual access to relevant prior conversations.
         if query and self.index.size() > cap:
             _k = min(4 + max(0, self.index.size() - 50) // 100, 10)
-            recalled = [t for t in self.index.search(query, k=_k, skip_last=cap)
-                        if t.get("ts", 0) >= self._session_start_ts]
+            recalled = self.index.search(query, k=_k, skip_last=cap)
             if recalled:
-                lines = []
-                for t in recalled:
-                    label = "Ian" if t["role"] == "user" else "Assistant"
-                    lines.append(f"{label}: {t['content'][:300]}")
-                msgs.append({
-                    "role": "system",
-                    "content": (
-                        "[RECALLED — semantically relevant turns from earlier in your history]\n"
-                        + "\n".join(lines)
-                        + "\n[Use this for context. Do not repeat it verbatim.]"
-                    )
-                })
+                # Split into current-session vs cross-session for clarity
+                current_session = [t for t in recalled
+                                   if t.get("ts", 0) >= self._session_start_ts]
+                prior_sessions  = [t for t in recalled
+                                   if t.get("ts", 0) < self._session_start_ts]
+                # Current session recall
+                if current_session:
+                    lines = []
+                    for t in current_session:
+                        label = "Ian" if t["role"] == "user" else "Assistant"
+                        lines.append(f"{label}: {t['content'][:300]}")
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "[RECALLED — from earlier in this conversation]\n"
+                            + "\n".join(lines)
+                            + "\n[Use this for context. Do not repeat it verbatim.]"
+                        )
+                    })
+                # Cross-session recall — cap to 4 turns, shorter content, with timestamps
+                if prior_sessions:
+                    from datetime import datetime as _dt
+                    lines = []
+                    for t in prior_sessions[:4]:
+                        label = "Ian" if t["role"] == "user" else "Assistant"
+                        ts = t.get("ts", 0)
+                        when = _dt.fromtimestamp(ts).strftime("%b %d, %I:%M%p") if ts else "unknown"
+                        lines.append(f"[{when}] {label}: {t['content'][:200]}")
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "[RECALLED — from a previous session]\n"
+                            + "\n".join(lines)
+                            + "\n[Reference only if directly relevant to what the user is asking now.]"
+                        )
+                    })
 
         # Recent turns — always included for immediate coherence
         # Cap assistant messages to prevent model's own verbose responses

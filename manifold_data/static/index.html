@@ -615,7 +615,7 @@ input[type=range]{accent-color:var(--primary)!important;}
   <div id="offline-banner">You are offline. Messages may not send.</div>
   <div id="topbar">
     <button id="sb-tog">&#9776;</button>
-    <span id="model-badge">Graceful-I1 &middot; Gemma 4 E4B</span>
+    <span id="model-badge">Graceful-I1 &middot; Gemma 3 12B</span>
     <div id="topbar-right">
       <button id="export-btn" title="Export chat as Markdown" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:.8em;padding:3px 7px;border-radius:6px;transition:color .1s;white-space:nowrap" onmouseenter="this.style.color='var(--text1)'" onmouseleave="this.style.color='var(--text3)'">&#8593; md</button>
       <button id="export-nb-btn" title="Export as Jupyter Notebook (.ipynb)" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:.8em;padding:3px 7px;border-radius:6px;transition:color .1s;white-space:nowrap" onmouseenter="this.style.color='var(--text1)'" onmouseleave="this.style.color='var(--text3)'">&#8593; ipynb</button>
@@ -727,7 +727,7 @@ input[type=range]{accent-color:var(--primary)!important;}
     </div>
     <div class="s-sec">
       <div class="s-lbl">Model</div>
-      <div id="sidebar-model-label" style="font-size:.82em;color:var(--text2);margin-top:4px;font-family:var(--mono)">Graceful &nbsp;·&nbsp; Gemma 4 E4B 4-bit</div>
+      <div id="sidebar-model-label" style="font-size:.82em;color:var(--text2);margin-top:4px;font-family:var(--mono)">Graceful &nbsp;·&nbsp; Gemma 3 12B 4-bit</div>
     </div>
     <div class="s-sec">
       <div class="s-lbl">Think Budget <span id="think-budget-disp" style="font-size:.7em;color:var(--text3);font-family:var(--mono);margin-left:6px"></span></div>
@@ -2231,9 +2231,9 @@ async function init(){
     // Set assistant name in header from config
     var _aName=d.assistant_name||"Graceful";
     var _mbEl=document.getElementById("model-badge");
-    if(_mbEl)_mbEl.textContent=_aName+" \u00b7 Gemma 4 E4B";
+    if(_mbEl)_mbEl.textContent=_aName+" \u00b7 Gemma 3 12B";
     var _sml=document.getElementById("sidebar-model-label");
-    if(_sml)_sml.textContent=_aName+" \u00b7 Gemma 4 E4B 4-bit";
+    if(_sml)_sml.textContent=_aName+" \u00b7 Gemma 3 12B 4-bit";
     thinkOn=d.think_mode||false;
     document.getElementById("think-btn").classList.toggle("on",thinkOn);
     if(thinkOn) _statusStrip.set('think','\uD83E\uDDE0 think','sp-purple',{title:'Deep reasoning active'});
@@ -2464,8 +2464,8 @@ document.addEventListener("DOMContentLoaded",function(){
     var sp=document.getElementById("sys-prompt").value;
     fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({assistant_name:an,user_name:un,system_prompt:sp})}).then(function(){
       _spFlash("saved ✓");_nameFlash("saved ✓");
-      var _mb=document.getElementById("model-badge");if(_mb)_mb.textContent=an+" \u00b7 Gemma 4 E4B";
-      var _sl=document.getElementById("sidebar-model-label");if(_sl)_sl.textContent=an+" \u00b7 Gemma 4 E4B 4-bit";
+      var _mb=document.getElementById("model-badge");if(_mb)_mb.textContent=an+" \u00b7 Gemma 3 12B";
+      var _sl=document.getElementById("sidebar-model-label");if(_sl)_sl.textContent=an+" \u00b7 Gemma 3 12B 4-bit";
     });
   };
   document.getElementById("persona-revert").onclick=async function(){
@@ -4142,11 +4142,11 @@ document.addEventListener("DOMContentLoaded",function(){
       renderMath(bub);
       _renderMermaid(lastRow);
       _checkCollapse(bub);
-      // Extract drift/conf badges from bubble text and place them below
+      // Extract drift/conf badges from anywhere in bubble and place them below
       (function(){
-        var lastP=bub.querySelector("p:last-of-type")||bub.lastElementChild;
-        if(!lastP)return;
-        var badges=Array.from(lastP.querySelectorAll("span")).filter(function(s){
+        // Search ALL spans in the bubble, not just last <p> — badges can land
+        // inside search results, code blocks, or list items
+        var badges=Array.from(bub.querySelectorAll("span")).filter(function(s){
           return /drift|confidence|↗|uncertain/i.test(s.textContent);
         });
         if(!badges.length)return;
@@ -4157,9 +4157,11 @@ document.addEventListener("DOMContentLoaded",function(){
           var clone=b.cloneNode(true);
           clone.style.fontSize=".68em";
           infoDiv.appendChild(clone);
+          // Clean up empty parent if badge was the only content
+          var par=b.parentElement;
           b.remove();
+          if(par&&par!==bub&&par.textContent.trim()==="")par.remove();
         });
-        if(lastP.textContent.trim()==="")lastP.remove();
         bub.parentElement.insertBefore(infoDiv,bub.nextSibling);
       })();
       _showFollowupChips(lastRow,bub);
@@ -4209,7 +4211,15 @@ document.addEventListener("DOMContentLoaded",function(){
     var sentences=txt.match(/[^.!?]*\?/g)||[];
     var questions=sentences
       .map(function(s){return s.replace(/^[\s\-\*\d\.]+/,"").trim();})
-      .filter(function(s){return s.length>12&&s.length<140;})
+      .filter(function(s){
+        if(s.length<12||s.length>140)return false;
+        // Filter out the model's own questions back to the user —
+        // these aren't useful as follow-up chips
+        var sl=s.toLowerCase();
+        if(/^(does |do you |would you |is there |are you |shall |should i |can i |want me )/.test(sl))return false;
+        if(/^(that |this |it )?(resonate|make sense|help|work|sound)/.test(sl))return false;
+        return true;
+      })
       .slice(0,3);
     if(!questions.length)return;
     _renderChips(row,questions.join("\n"));

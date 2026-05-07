@@ -6,8 +6,8 @@ import os, json, math
 import numpy as np
 
 # ── Model ────────────────────────────────────────────────────────
-MODEL       = "mlx-community/gemma-4-e4b-it-4bit"
-MODEL_SMALL = MODEL   # single model — MLX Gemma 4 E4B handles all complexity tiers
+MODEL       = "mlx-community/gemma-3-12b-it-4bit"
+MODEL_SMALL = MODEL   # single model — Gemma 3 12B handles all complexity tiers
 RANK        = 8
 HUTCH_N     = 1
 MAX_CTX     = 2048   # tokens for online-learning backprop
@@ -16,7 +16,7 @@ TRACE_LAYERS = 8     # adapter layers to subsample per trace call
 MAX_NEW     = 1024   # max generated tokens
 LR          = 1e-5
 GRAD_ACCUM  = 4      # gradient accumulation steps
-_VISION_TOKENS = 140 # Gemma 4 vision default
+_VISION_TOKENS = 256 # Gemma 3 vision default (256 tokens/image)
 
 # ── Paths ────────────────────────────────────────────────────────
 DATA_DIR    = "./manifold_data"

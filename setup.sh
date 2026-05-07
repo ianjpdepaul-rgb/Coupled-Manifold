@@ -12,7 +12,7 @@ cd "$DIR"
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "  COUPLED MANIFOLD — Setup"
-echo "  Gemma 4 E4B  ·  MLX  ·  Hessian trace  ·  online learning"
+echo "  Gemma 3 12B  ·  MLX  ·  Hessian trace  ·  online learning"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 
@@ -149,7 +149,7 @@ echo "════════════════════════�
 echo "  Hugging Face Token  (OPTIONAL)"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-echo "  The model used by this app (mlx-community/gemma-4-e4b-it-4bit)"
+echo "  The model used by this app (mlx-community/gemma-3-12b-it-4bit)"
 echo "  is publicly available — no token is required."
 echo ""
 if [ -t 0 ]; then
@@ -161,10 +161,10 @@ if [ -t 0 ]; then
         "$PY" -c "from huggingface_hub import login; login(token='$HF_TOKEN')"
         echo "✅  Token saved."
     else
-        echo "✅  Skipped — no token needed for Gemma 4 E4B."
+        echo "✅  Skipped — no token needed for Gemma 3 12B."
     fi
 else
-    echo "✅  Skipped (non-interactive) — no token needed for Gemma 4 E4B."
+    echo "✅  Skipped (non-interactive) — no token needed for Gemma 3 12B."
 fi
 
 # ── 7. API Keys ──────────────────────────────────────────────────
@@ -224,17 +224,17 @@ echo "✅  API keys saved."
 # ── 8. Download model ────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo "  Downloading Model (~4 GB, one-time only)"
+echo "  Downloading Model (~7 GB, one-time only)"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-echo "  Model: mlx-community/gemma-4-e4b-it-4bit"
-echo "  MLX-native 4-bit quantization  ·  128K context  ·  vision + audio + video"
+echo "  Model: mlx-community/gemma-3-12b-it-4bit"
+echo "  MLX-native 4-bit quantization  ·  128K context  ·  vision + text"
 echo ""
 
 "$PY" -c "
 from huggingface_hub import snapshot_download
-print('  Downloading mlx-community/gemma-4-e4b-it-4bit ...')
-snapshot_download(repo_id='mlx-community/gemma-4-e4b-it-4bit')
+print('  Downloading mlx-community/gemma-3-12b-it-4bit ...')
+snapshot_download(repo_id='mlx-community/gemma-3-12b-it-4bit')
 print('  Done.')
 "
 echo "✅  Model downloaded."

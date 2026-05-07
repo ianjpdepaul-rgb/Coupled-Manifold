@@ -364,6 +364,64 @@ class HumanProfile:
 
         return signals
 
+    def infer_response_depth(self, signals: dict | None = None) -> str:
+        """Infer how deep/long the model's response should be based on typing signals.
+
+        Returns: 'brief', 'moderate', or 'thorough'.
+        Brief = user typed fast, short message, no questions — match their energy.
+        Thorough = user invested time, long message, heavy editing — match their depth.
+        """
+        if not signals:
+            return "moderate"
+
+        ks = signals.get("keystroke_count", 0)
+        td = signals.get("typing_duration_ms", 0)
+        wc = signals.get("word_count", 0)
+        qc = signals.get("question_count", 0)
+        er = signals.get("edit_ratio", 0)
+        max_pause = signals.get("max_pause_ms", 0)
+
+        # Score: negative = brief, positive = thorough
+        depth_score = 0.0
+
+        # Short, fast messages → brief
+        if wc <= 5 and qc == 0:
+            depth_score -= 2.0
+        elif wc <= 10:
+            depth_score -= 0.5
+        elif wc > 50:
+            depth_score += 1.5
+        elif wc > 25:
+            depth_score += 0.5
+
+        # Fast typing → brief energy
+        if td > 0 and ks > 0:
+            cps = (ks / td) * 1000
+            if cps > 6:
+                depth_score -= 0.5  # fast typist, wants quick exchange
+            elif cps < 2:
+                depth_score += 0.5  # deliberate, thinking carefully
+
+        # Heavy editing → they're being precise, match it
+        if er > 0.2:
+            depth_score += 0.5
+
+        # Long pauses → deliberating, give a thoughtful response
+        if max_pause > 5000:
+            depth_score += 0.5
+
+        # Questions → they want substance
+        if qc >= 2:
+            depth_score += 1.0
+        elif qc == 1:
+            depth_score += 0.3
+
+        if depth_score <= -1.0:
+            return "brief"
+        elif depth_score >= 1.0:
+            return "thorough"
+        return "moderate"
+
     def context_string(self, signals: dict | None = None) -> str:
         """Compressed string for interoceptive block.
 
@@ -390,6 +448,19 @@ class HumanProfile:
 
         if self.engagement_quality < 0.2:
             parts.append("low_engagement")
+
+        # Read engagement — surface when notable
+        read_ms = signals.get("read_time_ms", 0)
+        if read_ms > 10000:
+            parts.append(f"read:{read_ms/1000:.0f}s")
+        scroll = signals.get("scroll_ups", 0)
+        if scroll >= 2:
+            parts.append(f"re-read:{scroll}x")
+
+        # Inferred response depth
+        depth = self.infer_response_depth(signals)
+        if depth != "moderate":
+            parts.append(f"depth:{depth}")
 
         if not parts:
             return ""

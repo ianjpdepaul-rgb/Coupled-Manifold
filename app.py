@@ -1,10 +1,10 @@
 """
 COUPLED MANIFOLD — Local Suite
-Gemma 4 E4B 4-bit | MLX | LoRA online learning | Hessian trace | FastAPI UI
+Gemma 3 12B 4-bit | MLX | LoRA online learning | Hessian trace | FastAPI UI
 
 Copyright (c) 2026 Ian De Paul
 MIT License — see LICENSE file for details.
-Model: Gemma 4 E4B by Google DeepMind (Gemma Terms of Use apply).
+Model: Gemma 3 12B by Google DeepMind (Gemma Terms of Use apply).
 
 pip install mlx mlx-vlm fastapi uvicorn python-multipart
 pip install numpy duckduckgo-search sentence-transformers httpx
@@ -440,7 +440,7 @@ def _check_learn_diversity(response: str) -> bool:
 
 class ModelPair:
     """
-    Single-model wrapper for the MLX backend (Gemma 4 E4B).
+    Single-model wrapper for the MLX backend (Gemma 3 12B).
     Keeps the same external API as the old dual-model pair so all callsites work unchanged.
     """
 
@@ -465,8 +465,8 @@ class ModelPair:
         pass  # MLX single-model backend — no secondary model
 
     def get_active(self, query: str = None) -> tuple:
-        """Returns (model, processor, controller, optimizer, label) — always Gemma 4 E4B."""
-        return self.large, self.large_tok, self.large_ctrl, self.large_opt, "Gemma4-E4B"
+        """Returns (model, processor, controller, optimizer, label) — always Gemma 3 12B."""
+        return self.large, self.large_tok, self.large_ctrl, self.large_opt, "Gemma3-12B"
 
     def switch_mode(self, new_mode: str):
         self.mode = new_mode
@@ -542,8 +542,7 @@ def _compute_trace_mlx(target_model, tokens_np):
     for a in subset:
         a.lora_on = True
 
-    # Don't call target_model.freeze()/unfreeze() — Gemma 4's
-    # AudioRelativePositionEmbedding crashes freeze(), and unfreeze()
+    # Don't call target_model.freeze()/unfreeze() — unfreeze()
     # would expose 4-bit quantized weights to gradient computation
     # (QuantizedMatmul has no vjp). The model already has the right
     # freeze state: quantized base frozen, adapter params unfrozen.
@@ -990,16 +989,12 @@ _boot_t0 = time.time()
 print(f"\n  Loading {MODEL}...")
 model, tok = _mlx_load(MODEL)   # tok = processor (mlx_vlm)
 
-# Freeze base weights.
-# model.freeze() walks ALL submodules including the audio tower; mlx_vlm's
-# AudioRelativePositionEmbedding has a broken _no_grad init so the full
-# model.freeze() throws AttributeError.  We only need the language model
-# frozen — the vision/audio towers are never in our gradient graph.
+# Freeze base weights — only language model needs freezing.
+# Vision tower is never in our gradient graph.
 try:
     model.language_model.freeze()
 except Exception as _fe:
     print(f"  ⚠  language_model.freeze() partial: {_fe}")
-    # Last-resort: freeze layer-by-layer, skipping broken modules
     try:
         for _layer in model.language_model.model.layers:
             try: _layer.freeze()
@@ -1085,6 +1080,8 @@ _prev_apparatus_state = {}   # Move 4: apparatus state change detection across t
 _last_fw_conf     = [None]   # Move 4: cached framework confidence for interoceptive block
 _last_sampling    = [0.7, 0.95]  # Move 4: [temp, top_p] from last generation
 _sys_profile      = [None]   # Task 1-2: system profile singleton (initialized after DATA_DIR is confirmed)
+_last_coupled_detail = [None, None]  # (nudge_str, detail_str) from last coupled trace
+_message_timestamps  = []    # epoch timestamps for conversation momentum tracking
 
 # ── Personality prompt loading ────────────────────────────────────────────────
 # Cascade: user personality file → default personality file → shipped default
@@ -1260,7 +1257,7 @@ except Exception as _pair_err:
         small_ctrl = None
         large_ctrl = None
         def get_active(self, query=None):
-            return model, tok, ctrl, opt, "Gemma4-E4B"
+            return model, tok, ctrl, opt, "Gemma3-12B"
         def switch_mode(self, m): pass
     pair = _FakePair()
 
@@ -1707,8 +1704,7 @@ def build_interoceptive_block():
     #   P3: system profile
     #   P2: apparatus block
     #   P1: coupled trace (heartbeat, momentum, anxiety, drift, thresholds, stability)
-    # Hard ceiling: 1600 chars (~400 tokens)
-    _INTERO_CEILING = 1600
+    # Budget is set at assembly time (~2200 chars / ~550 tokens)
 
     # Core trace section — compressed single-line format
     _core = (
@@ -1829,24 +1825,105 @@ def build_interoceptive_block():
                 _adapt_parts.append("playful → match the energy, riff")
     except Exception:
         pass
+    # Response depth from typing signals
+    try:
+        _depth = _human_profile.infer_response_depth(_human_signals[0])
+        if _depth == "brief":
+            _adapt_parts.append("brief input → keep response short, match their energy")
+        elif _depth == "thorough":
+            _adapt_parts.append("thorough input → go deep, they invested thought")
+    except Exception:
+        pass
     if _adapt_parts:
         _coupling_ctx = "\n[ADAPT] " + " | ".join(_adapt_parts)
 
+    # ── Conversation momentum — inter-message pacing ──
+    _momentum_ctx = ""
+    try:
+        if len(_message_timestamps) >= 2:
+            _recent_gaps = []
+            for _i in range(max(0, len(_message_timestamps) - 5), len(_message_timestamps) - 1):
+                _recent_gaps.append(_message_timestamps[_i + 1] - _message_timestamps[_i])
+            if _recent_gaps:
+                _avg_gap = sum(_recent_gaps) / len(_recent_gaps)
+                if _avg_gap < 30:
+                    _momentum_ctx = "\n[MOMENTUM] rapid volley — stay snappy, keep ball moving"
+                elif _avg_gap < 120:
+                    _momentum_ctx = "\n[MOMENTUM] steady pace"
+                elif _avg_gap < 300:
+                    _momentum_ctx = "\n[MOMENTUM] reflective pace — they're thinking between messages"
+                else:
+                    _momentum_ctx = f"\n[MOMENTUM] slow ({_avg_gap/60:.0f}min gaps) — may need re-grounding"
+    except Exception:
+        pass
+
+    # ── Coupled trace explanation — why the trace was nudged ──
+    _coupled_ctx = ""
+    try:
+        if _last_coupled_detail[0] is not None:
+            _coupled_ctx = f"\n[COUPLED] nudge:{_last_coupled_detail[0]} ({_last_coupled_detail[1]})"
+    except Exception:
+        pass
+
+    # ── Conversation arc — phase awareness ──
+    _arc_ctx = ""
+    try:
+        _tc = turn_count[0]
+        _traj = _human_profile.session_trajectory()
+        if _tc <= 2:
+            _arc_ctx = "\n[ARC] opening — establishing topic, be welcoming"
+        elif _tc <= 5:
+            _arc_ctx = "\n[ARC] developing — building shared context"
+        elif _traj == "contracting":
+            _arc_ctx = f"\n[ARC] winding down (turn {_tc}, messages shortening) — be concise, don't over-extend"
+        elif _traj == "expanding":
+            _arc_ctx = f"\n[ARC] deepening (turn {_tc}, messages growing) — match their expanding depth"
+        elif _tc > 20:
+            _arc_ctx = f"\n[ARC] extended session (turn {_tc}) — check: still productive?"
+    except Exception:
+        pass
+
+    # ── Verbosity ratio — model vs user response length ──
+    _verbosity_ctx = ""
+    try:
+        if len(session_log) >= 3:
+            _user_lens = [len(t.get("user", "")) for t in session_log[-6:] if t.get("user")]
+            _model_lens = [len(t.get("response", "")) for t in session_log[-6:] if t.get("response")]
+            if _user_lens and _model_lens:
+                _avg_user = sum(_user_lens) / len(_user_lens)
+                _avg_model = sum(_model_lens) / len(_model_lens)
+                if _avg_user > 0:
+                    _ratio = _avg_model / _avg_user
+                    if _ratio > 8:
+                        _verbosity_ctx = f"\n[VERBOSITY] {_ratio:.0f}x user length — you're talking much more than them. Shorten."
+                    elif _ratio > 4:
+                        _verbosity_ctx = f"\n[VERBOSITY] {_ratio:.0f}x user length — consider being more concise"
+                    elif _ratio < 0.5 and _avg_user > 100:
+                        _verbosity_ctx = f"\n[VERBOSITY] {_ratio:.1f}x — user wrote more than you. Match their investment."
+    except Exception:
+        pass
+
     # Assemble with priority dropping
     _end = "\n[END INTEROCEPTIVE STATE]"
+    # Increase ceiling to accommodate new signals
+    _INTERO_CEILING = 2200
     # Start with everything, drop lowest priority first
     _sections = [
-        (5, _failure_modes),
-        (4, _instructions),
-        (3.5, _ocean_ctx),
-        (3, _sp),
-        (2.5, _temporal_ctx),
-        (2.4, _human_ctx),
-        (2.3, _mood_ctx),
-        (2.2, _conf_ctx),
-        (2.1, _latent_ctx),
-        (2, _app),
-        (1.5, _coupling_ctx),
+        (6, _failure_modes),
+        (5, _instructions),
+        (4.5, _ocean_ctx),
+        (4, _sp),
+        (3.5, _temporal_ctx),
+        (3, _human_ctx),
+        (2.8, _mood_ctx),
+        (2.7, _conf_ctx),
+        (2.6, _latent_ctx),
+        (2.5, _app),
+        (2, _coupled_ctx),
+        (1.8, _momentum_ctx),
+        (1.6, _arc_ctx),
+        (1.4, _verbosity_ctx),
+        (1.2, _coupling_ctx),
         (1, _stab),
     ]
     # Always include core + end
@@ -2716,6 +2793,40 @@ def chat(user_msg, history):
         _skip_search_this_turn[0] = True
         # Fall through to normal generation with this modified user_msg
 
+    # Natural continuation — "keep going", "continue", "more", "go on", etc.
+    # Without the slash prefix, these get treated as regular messages and the
+    # model gives lazy "I'm ready when you are" non-answers. Fix: inject the
+    # previous response tail so the model knows what to elaborate on.
+    _cont_phrases = {
+        "keep going", "go on", "continue", "more", "more please",
+        "yeah keep going", "yes keep going", "yeah lets keep going",
+        "yes lets keep going", "tell me more", "elaborate",
+        "continue?", "go on?", "more?", "and?", "keep going?",
+        "yeah more", "yes more", "what else", "what else?",
+    }
+    if user_msg.strip().lower().rstrip(".!") in _cont_phrases:
+        _last_asst_cont = ""
+        for _m in reversed(list(history or [])):
+            if _m.get("role") == "assistant":
+                _c = _m.get("content", "") or ""
+                if isinstance(_c, list):
+                    _c = " ".join(x.get("text", "") for x in _c if isinstance(x, dict))
+                if "<!--MED-->" in _c:
+                    _c = _c[:_c.index("<!--MED-->")]
+                _c = re.sub(r'<span\b[^>]*>.*?</span>', '', _c)
+                _c = re.sub(r'<div\b[^>]*>.*?</div>', '', _c, flags=re.DOTALL)
+                _c = re.sub(r'<!--\w+-->', '', _c)
+                _last_asst_cont = _c.strip()
+                break
+        if _last_asst_cont:
+            _cont_tail = _last_asst_cont[-300:]
+            user_msg = (
+                f"The user wants you to continue and elaborate further on your previous response. "
+                f"Do not repeat what you already said. Expand, go deeper, add detail. "
+                f"Your previous response ended with: «{_cont_tail}»"
+            )
+            _skip_search_this_turn[0] = True
+
     # /stats — system and memory status
     if user_msg.strip().lower() == "/stats":
         s         = mem.status()
@@ -2825,7 +2936,7 @@ def chat(user_msg, history):
         _st = mem.status()
         reply = (
             "**Graceful — Coupled Manifold**\n\n"
-            f"Model: `mlx-community/gemma-4-e4b-it-4bit`\n"
+            f"Model: `{MODEL}`\n"
             f"MLX: `{mlx_ver}`\n"
             f"Python: `{py_ver}`\n"
             f"Platform: `{platform.platform()}`\n"
@@ -3217,6 +3328,7 @@ def chat(user_msg, history):
     # /clear — reset session history (keeps identity/corpus)
     if user_msg.strip().lower() == "/clear":
         session_log.clear()
+        _message_timestamps.clear()
         turn_count[0] = 0
         trace_history_live.clear()
         ctrl.history.clear()
@@ -3226,6 +3338,7 @@ def chat(user_msg, history):
         ctrl.consec_patho = 0
         ctrl.anti_count = 0
         _prev_apparatus_state.clear(); _last_fw_conf[0] = None; _last_sampling[:] = [0.7, 0.95]
+        _last_coupled_detail[:] = [None, None]
         _code_ns.clear()             # also reset Python namespace — variables from cleared chat are stale
         reply = "**Session cleared.** Memory and corpus are intact. Code namespace also reset."
         history = []  # clear the gradio history too
@@ -3900,16 +4013,16 @@ plt.tight_layout()
         yield "", history
         return
 
-    # /visionquality [low|medium|high|ultra|max] — tune Gemma 4 vision token budget
+    # /visionquality [low|medium|high|ultra|max] — tune vision token budget
     if user_msg.strip().lower().startswith("/visionquality"):
         global _VISION_TOKENS
         _VQ_MAP = {
-            "low":    70,   "fast":   70,
-            "medium": 280,  "med":    280,
-            "high":   560,
-            "ultra":  1120, "max":    1120,
+            "low":    64,   "fast":   64,
+            "medium": 256,  "med":    256,
+            "high":   576,
+            "ultra":  1024, "max":    1024,
         }
-        _VQ_LEVELS = {70: "low (fast)", 140: "low+", 280: "medium", 560: "high", 1120: "ultra (max)"}
+        _VQ_LEVELS = {64: "low (fast)", 256: "medium (default)", 576: "high", 1024: "ultra (max)"}
         parts = user_msg.strip().split()
         if len(parts) == 1:
             reply = (f"**Vision quality:** {_VQ_LEVELS.get(_VISION_TOKENS, str(_VISION_TOKENS))} "
@@ -4686,6 +4799,7 @@ plt.tight_layout()
 
     turn_count[0] += 1
     t0 = time.time()
+    _message_timestamps.append(t0)
     searched = False
     try:
         _temporal.record_message()
@@ -4852,6 +4966,11 @@ plt.tight_layout()
     if intero_block:   context_parts.append(intero_block)
     if web_context:    context_parts.append(web_context)
 
+    # Cross-session continuity — inject topic/thread awareness from prior sessions
+    _continuity = _cross_session.get_continuity_context()
+    if _continuity:
+        context_parts.append(_continuity)
+
     # Anti-hallucination injection — when we have no grounding for a factual question
     _is_factual = any(w in user_msg.lower() for w in
                       ["what is", "who is", "when did", "how many", "where is",
@@ -5012,11 +5131,22 @@ plt.tight_layout()
         if _new_inj:
             _sys_content = (_sys_content + "\n\n" + _new_inj) if _sys_content else _new_inj
 
-    # Response length preference (S/M/L from frontend)
-    if _response_length[0] == "S":
+    # Response length preference (S/M/L from frontend, with typing-inferred override)
+    _effective_length = _response_length[0]
+    # When user hasn't manually set S or L, infer from typing behavior
+    if _effective_length == "M" and _human_signals[0]:
+        try:
+            _inferred = _human_profile.infer_response_depth(_human_signals[0])
+            if _inferred == "brief":
+                _effective_length = "S"
+            elif _inferred == "thorough":
+                _effective_length = "L"
+        except Exception:
+            pass
+    if _effective_length == "S":
         _len_instr = "LENGTH: Respond in 1-2 sentences. Stop the moment you've answered the question."
         _sys_content = (_sys_content + "\n\n" + _len_instr) if _sys_content else _len_instr
-    elif _response_length[0] == "L":
+    elif _effective_length == "L":
         _len_instr = "LENGTH: Give a thorough answer with examples and elaboration. Don't stop short."
         _sys_content = (_sys_content + "\n\n" + _len_instr) if _sys_content else _len_instr
     # M = default, no injection needed
@@ -5282,13 +5412,12 @@ plt.tight_layout()
         _pending_image[0] = None; _pending_video[0] = None
         _gen_audio = _pending_audio[0]; _pending_audio[0] = None
 
-        # Vision token budget — resize_shape controls how many tokens Gemma 4 uses per image.
-        # Gemma 4 native steps: 70/140/280/560/1120. _VISION_TOKENS is set in CONFIG.
-        # Map token count to approximate pixel dimension (tokens ≈ (px/14)^2 * 2/3 for Gemma4).
+        # Vision token budget — resize_shape controls image resolution before encoding.
+        # Gemma 3 uses SigLIP with 14×14 patches. Map token budget to pixel dimension.
         if _gen_image is not None:
             _vt = _VISION_TOKENS
-            # Rough px dimension: each token ≈ 14×14 patch, ~0.66 coverage → px ≈ sqrt(vt/0.66)*14
-            _px = int((_vt / 0.66) ** 0.5 * 14)
+            # px ≈ sqrt(tokens) * patch_size — Gemma 3 default is 256 tokens → 224px
+            _px = int(_vt ** 0.5 * 14)
             _stream_kwargs['resize_shape'] = (_px, _px)
 
         raw_tokens     = []
@@ -5322,7 +5451,7 @@ plt.tight_layout()
                         break
 
                 # Yield streaming update — strip think blocks (both formats)
-                # Gemma 4 uses <|channel>thought\n...<channel|>{response}
+                # Some models use <|channel>thought\n...<channel|>{response}
                 # Some models use <think>...</think>
                 if "<channel|>" in partial:
                     display = partial.split("<channel|>")[-1]
@@ -5429,7 +5558,7 @@ plt.tight_layout()
 
     # Self-correction disabled: requires a second model as independent reviewer.
     # Same-model review at temp=0 rubber-stamps its own output — no signal, doubles latency.
-    # Re-enable when a small reviewer model is loaded alongside Gemma 4.
+    # Re-enable when a small reviewer model is loaded alongside the main model.
 
     # ── Trace computation ────────────────────────────────────────────────
     t1 = time.time()
@@ -5501,6 +5630,8 @@ plt.tight_layout()
     # Coupled trace summary — compute early so framework confidence can use it
     _coupled_nudge_str, _coupled_detail = _coupled_trace.summarize(
         _model_trace_raw, _hs_snap, trace)
+    _last_coupled_detail[0] = _coupled_nudge_str
+    _last_coupled_detail[1] = _coupled_detail
 
     # Step SnobLine — None trace is a no-op (no state change, current mode kept)
     mode = ctrl_active.step(trace, turn_count[0])
@@ -6575,6 +6706,7 @@ async def api_new():
     mem.history.start_new_session()     # clear model context + summaries + set session boundary
     # Reset in-memory session-scoped state (match /api/reset and /clear)
     session_log.clear()
+    _message_timestamps.clear()
     turn_count[0] = 0
     trace_history_live.clear()
     ctrl.history.clear()
@@ -6590,6 +6722,7 @@ async def api_new():
     _compress_mode[0] = False
     _recent_response_vecs.clear()
     _prev_apparatus_state.clear(); _last_fw_conf[0] = None; _last_sampling[:] = [0.7, 0.95]
+    _last_coupled_detail[:] = [None, None]
     # Clear session-scoped persona (unless persistent)
     if _active_persona[0] and not _active_persona[0].get("persistent"):
         _active_persona[0] = None
@@ -7291,9 +7424,9 @@ async def api_settings(request: Request):
     if "think_budget" in data:
         think_budget[0] = max(100, min(2000, int(data["think_budget"])))
     if "vision_tokens" in data:
-        # Valid Gemma 4 vision token counts: 70 / 140 / 280 / 560 / 1120
+        # Vision token counts — snap to nearest valid value
         _vt = int(data["vision_tokens"])
-        _VALID_VT = [70, 140, 280, 560, 1120]
+        _VALID_VT = [64, 256, 576, 1024]
         global _VISION_TOKENS
         _VISION_TOKENS = min(_VALID_VT, key=lambda x: abs(x - _vt))
     if "show_medulla" in data:

@@ -215,6 +215,19 @@ class CrossSessionTracker:
         last = self.session_summaries[-1]
         parts = []
 
+        # When was the last session?
+        last_ts = last.get("ts")
+        if last_ts:
+            from datetime import datetime
+            dt = datetime.fromtimestamp(last_ts)
+            gap = time.time() - last_ts
+            if gap < 3600:
+                parts.append(f"last_session: {gap/60:.0f}min ago")
+            elif gap < 86400:
+                parts.append(f"last_session: {dt.strftime('%I:%M%p').lstrip('0')} today")
+            else:
+                parts.append(f"last_session: {dt.strftime('%b %d, %I:%M%p').lstrip('0')}")
+
         topics = last.get("top_topics", [])
         if topics:
             parts.append(f"last_topics:{','.join(topics[:3])}")
@@ -222,7 +235,8 @@ class CrossSessionTracker:
         # Unresolved threads
         unresolved = [t for t in self.unresolved_threads if not t.get("resolved")]
         if unresolved:
-            parts.append(f"open_threads:{len(unresolved)}")
+            recent_q = [t["question"][:60] for t in unresolved[-3:]]
+            parts.append(f"open_threads({len(unresolved)}): {'; '.join(recent_q)}")
 
         # Recurring patterns
         active_patterns = [p for p in self.recurring_patterns

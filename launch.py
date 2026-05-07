@@ -175,7 +175,7 @@ class App(tk.Tk):
         self._icon_label(self, large=True)
         tk.Label(self, text="Coupled Manifold",
                  font=("SF Pro Display", 22, "bold"), bg=BG, fg=FG).pack()
-        tk.Label(self, text="Gemma 4 E4B  ·  MLX  ·  Hessian trace  ·  online learning",
+        tk.Label(self, text="Gemma 3 12B  ·  MLX  ·  Hessian trace  ·  online learning",
                  font=("SF Pro Display", 11), bg=BG, fg=FG2).pack(pady=(2, 14))
 
         tk.Frame(self, bg=BG3, height=1).pack(fill=tk.X, padx=40, pady=(0, 14))
@@ -269,7 +269,7 @@ class App(tk.Tk):
             """Watch HuggingFace cache and drive the progress bar."""
             import glob
             hf_base = os.path.expanduser(
-                "~/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-4bit"
+                "~/.cache/huggingface/hub/models--mlx-community--gemma-3-12b-it-4bit"
             )
             # Approximate total: ~4.2 GB
             total_bytes = 4_200_000_000
@@ -653,12 +653,12 @@ class App(tk.Tk):
                  font=("SF Pro Display", 15, "bold"), bg=BG, fg=FG).pack(anchor=tk.W)
 
         ram_gb = get_ram_gb()
-        ram_note = (f"Detected {ram_gb:.0f} GB RAM  →  Gemma 4 E4B 4-bit (~4 GB) — fits comfortably"
+        ram_note = (f"Detected {ram_gb:.0f} GB RAM  →  Gemma 3 12B 4-bit (~7 GB) — fits comfortably"
                     if ram_gb >= 8 else
                     f"Detected {ram_gb:.0f} GB RAM  →  may be tight, but should work")
         ram_color = GREEN if ram_gb >= 8 else "#ffd740"
         tk.Label(self._area,
-                 text="Gemma 4 E4B 4-bit  ·  ~4 GB download  ·  MLX native  ·  128K context  ·  vision + audio",
+                 text="Gemma 3 12B 4-bit  ·  ~7 GB download  ·  MLX native  ·  128K context  ·  vision + text",
                  font=("SF Pro Display", 11), bg=BG, fg=FG2,
                  wraplength=640).pack(anchor=tk.W, pady=(2, 4))
         tk.Label(self._area, text=ram_note, font=("SF Pro Display", 10),
@@ -691,7 +691,7 @@ class App(tk.Tk):
         self._model_btn.pack(anchor=tk.E, pady=(8, 0))
 
     def _do_download(self):
-        model_id = "mlx-community/gemma-4-e4b-it-4bit"
+        model_id = "mlx-community/gemma-3-12b-it-4bit"
         needed_gb = 4.5
         free_gb   = get_free_gb(os.path.expanduser("~"))
         if free_gb < needed_gb:
@@ -717,7 +717,7 @@ class App(tk.Tk):
         def _run():
             script = (
                 "from huggingface_hub import snapshot_download;"
-                f"print('Downloading {model_id} (~4 GB, be patient)...');"
+                f"print('Downloading {model_id} (~7 GB, be patient)...');"
                 f"snapshot_download(repo_id='{model_id}');"
                 "print('Done.')"
             )
