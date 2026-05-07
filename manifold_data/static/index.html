@@ -4816,8 +4816,8 @@ document.addEventListener("DOMContentLoaded",function(){
     document.body.appendChild(tip);
     var _defs=[
       {key:"turn",    label:"Turn",          note:"conversation turn number"},
-      {key:"temp",    label:"Trace",          note:"a live readout of the model\u2019s reasoning stability"},
-      {key:"mode",    label:"Model mode",    note:"lora = fine-tuned · base = raw · small/large = size"},
+      {key:"temp",    label:"Trace",          note:"Hessian curvature \u2014 higher = exploring, lower = converging"},
+      {key:"mode",    label:"Adapter mode",  note:"lora = learning toward you \xb7 anti = resisting collapse \xb7 base = raw model"},
       {key:"prompt↓", label:"Prompt tokens", note:"tokens sent to model this turn"},
       {key:"output↑", label:"Output tokens", note:"tokens the model generated"},
       {key:"corpus",  label:"Corpus chunks", note:"memory segments loaded from your history"},
