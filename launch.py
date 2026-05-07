@@ -395,29 +395,88 @@ class App(tk.Tk):
         webbrowser.open(APP_URL)
 
     def _do_stop(self):
-        if self._server_proc:
+        self._stop_btn.config(state=tk.DISABLED)
+        self._status.config(text="Putting model to sleep...", fg=FG2)
+        self._cwrite("\n▸  Triggering sleep consolidation...\n")
+        self._pbar.start(10)
+
+        def _stop_thread():
+            # 1. Trigger sleep consolidation via API
             try:
-                self._server_proc.terminate()   # SIGTERM → triggers _shutdown_save
-                self._server_proc.wait(timeout=5)
-            except Exception:
+                import urllib.request
+                req = urllib.request.Request(
+                    "http://localhost:7860/api/sleep/trigger",
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                    data=b"{}",
+                )
+                urllib.request.urlopen(req, timeout=5)
+                self._cwrite("  💤 Sleep triggered — consolidating memories...\n")
+            except Exception as e:
+                self._cwrite(f"  ⚠ Could not trigger sleep: {e}\n")
+
+            # 2. Wait for consolidation (poll until sleeping or timeout)
+            import urllib.request as _ur
+            for i in range(30):  # 30s max wait
+                time.sleep(1)
                 try:
-                    self._server_proc.kill()
+                    r = _ur.urlopen("http://localhost:7860/api/sleep", timeout=2)
+                    data = json.loads(r.read())
+                    state = data.get("state", "")
+                    if state == "sleeping":
+                        self._cwrite("  💤 Consolidation complete.\n")
+                        break
+                    elif state == "entering":
+                        if i % 5 == 0:
+                            self._cwrite(f"  💤 Still consolidating... ({i}s)\n")
+                except Exception:
+                    break
+            else:
+                self._cwrite("  ⚠ Consolidation timed out — shutting down anyway.\n")
+
+            # 3. Save all state via shutdown endpoint (saves session + OCEAN + profiles + temporal)
+            try:
+                req = urllib.request.Request(
+                    "http://localhost:7860/api/shutdown",
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                    data=b"{}",
+                )
+                urllib.request.urlopen(req, timeout=5)
+                self._cwrite("  ✓ Session saved.\n")
+            except Exception as e:
+                self._cwrite(f"  ⚠ Save failed: {e}\n")
+
+            time.sleep(1)  # let server finish shutdown save before killing
+
+            # 4. Kill the server process
+            if self._server_proc:
+                try:
+                    self._server_proc.terminate()
+                    self._server_proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        self._server_proc.kill()
+                    except Exception:
+                        pass
+                self._server_proc = None
+            _kill_port_server()
+            self._orphan_pid = None
+            if hasattr(self, "_dl_done"):
+                self._dl_done.set()
+
+            def _done():
+                try:
+                    self._pbar.stop()
+                    self._launch_btn.config(text="Launch  →", state=tk.NORMAL,
+                                            command=self._do_launch)
+                    self._status.config(text="Stopped — memories consolidated.", fg=FG2)
+                    self._cwrite("\n  Goodnight. ✓\n")
                 except Exception:
                     pass
-            self._server_proc = None
-        # Always try port kill as fallback (catches orphans and stubborn processes)
-        _kill_port_server()
-        self._orphan_pid = None
-        if hasattr(self, "_dl_done"):
-            self._dl_done.set()
-        try:
-            self._pbar.stop()
-            self._stop_btn.config(state=tk.DISABLED)
-            self._launch_btn.config(text="Launch  →", state=tk.NORMAL,
-                                    command=self._do_launch)
-            self._status.config(text="Stopped.", fg=FG2)
-        except Exception:
-            pass  # UI might already be destroyed
+            self.after(0, _done)
+
+        threading.Thread(target=_stop_thread, daemon=True).start()
 
     # ══════════════════════════════════════════════════════════════════════
     # SETUP WIZARD  (first run)
@@ -1009,8 +1068,20 @@ class App(tk.Tk):
             self._shutdown()
 
     def _shutdown(self):
-        """Clean shutdown — stop server, cancel bg threads, destroy window."""
+        """Clean shutdown — save session, stop server, cancel bg threads, destroy window."""
         self._shutting_down = True
+        # Save session before killing
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "http://localhost:7860/api/save",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                data=b"{}",
+            )
+            urllib.request.urlopen(req, timeout=3)
+        except Exception:
+            pass
         # Stop the server
         if self._server_proc:
             try:

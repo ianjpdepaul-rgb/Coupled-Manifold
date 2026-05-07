@@ -178,6 +178,46 @@ def score_from_signals(signals: dict, embedder=None, text: str = "") -> dict[str
     elif signals.get("exclamation_count", 0) > 2:
         scores["N"] = 0.55
 
+    # ── Behavioral signal enrichment (keyboard-as-interface) ────────
+    # These refine OCEAN from *how* you type, not just *what* you type.
+
+    # Openness: high rhythm variance = exploratory typing, long pauses = deliberation
+    rhythm_var = signals.get("typing_rhythm_variance", 0)
+    if rhythm_var > 50000:  # high variance = uneven rhythm = exploring
+        scores["O"] = min(1.0, (scores["O"] or 0.5) + 0.1)
+    read_ms = signals.get("read_time_ms", 0)
+    if read_ms > 15000:  # long read before responding = absorbing, curious
+        scores["O"] = min(1.0, (scores["O"] or 0.5) + 0.08)
+
+    # Conscientiousness: low edit ratio = clean first drafts, high = careful revision
+    edit_ratio = signals.get("edit_ratio", 0)
+    if edit_ratio > 0.15:  # heavy editing = conscientious self-correction
+        scores["C"] = min(1.0, (scores["C"] or 0.5) + 0.12)
+    elif edit_ratio == 0 and signals.get("keystroke_count", 0) > 20:
+        scores["C"] = max(0.0, (scores["C"] or 0.5) - 0.05)  # no editing on long msg
+
+    # Extraversion: fast typing speed = assertive/expressive
+    ks = signals.get("keystroke_count", 0)
+    td = signals.get("typing_duration_ms", 0)
+    if td > 0 and ks > 0:
+        cps = (ks / td) * 1000
+        if cps > 5:   # fast typist = more extraverted
+            scores["E"] = min(1.0, (scores["E"] or 0.5) + 0.08)
+        elif cps < 1.5:  # slow, deliberate = more introverted
+            scores["E"] = max(0.0, (scores["E"] or 0.5) - 0.06)
+
+    # Agreeableness: paste ratio as proxy — low paste = original thought
+    paste_ratio = signals.get("paste_ratio", 0)
+    scroll_ups = signals.get("scroll_ups", 0)
+    if scroll_ups >= 2:  # re-reading model's response = engaged, agreeable
+        scores["A"] = min(1.0, (scores["A"] or 0.5) + 0.06)
+    if paste_ratio > 0.5:  # mostly pasted content = less personal engagement
+        scores["A"] = max(0.0, (scores["A"] or 0.5) - 0.08)
+
+    # Neuroticism: high edit ratio + long pauses + rhythm variance = anxiety signal
+    if edit_ratio > 0.25 and signals.get("median_pause_ms", 0) > 800:
+        scores["N"] = min(1.0, (scores["N"] or 0.5) + 0.1)
+
     return scores
 
 

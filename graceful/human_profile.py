@@ -270,6 +270,7 @@ class HumanProfile:
         # Session trajectory
         self._session_message_lengths: list[int] = []
         self._session_paces: list[float] = []  # chars per second
+        self._session_signals: list[dict] = []  # per-turn signal snapshots for behavior bar
 
         # Inferred state (current)
         self.emotional_valence: float = 0.0
@@ -358,6 +359,26 @@ class HumanProfile:
                 if stat.is_anomalous(signals[name]):
                     anomalies.append(name)
         signals["anomalies"] = anomalies
+
+        # Session signal snapshot for behavior bar
+        _ks = signals.get("keystroke_count", 0)
+        _wc = signals.get("word_count", 0)
+        self._session_signals.append({
+            "turn": len(self._session_signals) + 1,
+            "typing_speed": round((_ks / (td / 1000)) if td > 0 and _ks > 0 else 0, 1),
+            "edit_ratio": round(signals.get("edit_ratio", 0), 3),
+            "median_pause_ms": signals.get("median_pause_ms", 0),
+            "max_pause_ms": signals.get("max_pause_ms", 0),
+            "read_time_ms": signals.get("read_time_ms", 0),
+            "rhythm_var": signals.get("typing_rhythm_variance", 0),
+            "word_count": _wc,
+            "valence": round(self.emotional_valence, 2),
+            "urgency": round(self.urgency, 2),
+            "engagement": round(self.engagement_quality, 2),
+            "mode": self.mode,
+        })
+        if len(self._session_signals) > 50:
+            self._session_signals = self._session_signals[-50:]
 
         # Log
         self._log(signals)
@@ -462,6 +483,36 @@ class HumanProfile:
         if depth != "moderate":
             parts.append(f"depth:{depth}")
 
+        # Trajectory shifts — how the user's behavior is changing
+        if len(self._session_signals) >= 3:
+            recent = self._session_signals[-3:]
+            earlier = self._session_signals[:-3] if len(self._session_signals) > 3 else self._session_signals[:1]
+            avg_r = lambda k: sum(s.get(k, 0) for s in recent) / len(recent)
+            avg_e = lambda k: sum(s.get(k, 0) for s in earlier) / len(earlier)
+            shifts = []
+            spd_r, spd_e = avg_r("typing_speed"), avg_e("typing_speed")
+            if spd_e > 0 and spd_r > spd_e * 1.3:
+                shifts.append("speeding up")
+            elif spd_e > 0 and spd_r < spd_e * 0.7:
+                shifts.append("slowing down")
+            er_r, er_e = avg_r("edit_ratio"), avg_e("edit_ratio")
+            if er_r > er_e + 0.1:
+                shifts.append("more hesitant")
+            elif er_r < er_e - 0.1:
+                shifts.append("more fluid")
+            eng_r, eng_e = avg_r("engagement"), avg_e("engagement")
+            if eng_r > eng_e + 0.15:
+                shifts.append("engagement rising")
+            elif eng_r < eng_e - 0.15:
+                shifts.append("engagement dropping")
+            val_r, val_e = avg_r("valence"), avg_e("valence")
+            if val_r > val_e + 0.2:
+                shifts.append("warming up")
+            elif val_r < val_e - 0.2:
+                shifts.append("cooling off")
+            if shifts:
+                parts.append("shift:" + ",".join(shifts))
+
         if not parts:
             return ""
         return "[HUMAN] " + " | ".join(parts)
@@ -497,6 +548,7 @@ class HumanProfile:
             "engagement": round(self.engagement_quality, 2),
             "mode": self.mode,
         }
+        summary["session_signals"] = self._session_signals[-30:]
         return summary
 
     def _log(self, signals: dict):

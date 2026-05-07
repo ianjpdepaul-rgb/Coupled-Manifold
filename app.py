@@ -163,6 +163,8 @@ from mlx_vlm import apply_chat_template as _mlx_chat_template
 # Serialize all model forward/backward passes — background trace thread and main generation
 # thread both touch the model; without a lock they can interleave and corrupt adapter state.
 _model_lock = threading.Lock()   # guards all model.forward / value_and_grad calls
+_tokenizer_lock = threading.Lock()  # guards tokenizer encode/decode — Rust backend not thread-safe
+_lock_holder = ["none"]          # debug: name of current lock holder
 _save_lock  = threading.Lock()   # guards session file writes (atomic rename)
 
 # Detect once at import time whether this mlx_vlm version supports chunked prefill
@@ -186,6 +188,7 @@ def get_thinking_phrase():
     return random.choice(THINKING_NEUTRAL)
 
 from memory import Memory
+from sleep_consolidator import SleepConsolidator, WAKE_LINES, SLEEP_LINES, DROWSY_LINES, ENTERING_LINES, JOSTLED_LINES
 
 # ═══════════════════════════════════════════════════
 # CONFIG  (constants imported from graceful.config at top of file)
@@ -847,11 +850,15 @@ def set_mode(mode, target_model=None):
         mod.anti_on = anti_on
 
 def strip_medulla(content):
-    if isinstance(content, str) and "<div style=" in content:
-        return content.split("\n\n<div style=")[0]
     if not isinstance(content, str):
         return str(content)
-    return content
+    if "<!--MED-->" in content:
+        content = content[:content.index("<!--MED-->")]
+    if "<div style=" in content:
+        content = content.split("\n\n<div style=")[0]
+    # Strip inline drift badges too
+    content = re.sub(r"<span style='[^']*'>⚡[^<]*</span>", "", content)
+    return content.strip()
 
 def extract_text(msg):
     """Safely extract plain string from any Gradio message format."""
@@ -1035,11 +1042,12 @@ except Exception:
     total     = trainable
 print(f"  Adapters: {count} | Trainable: {trainable:,} / {total:,}")
 
-# Cap MLX Metal memory to 13.5 GB on 16 GB machines — leaves ~2.5 GB for OS + Python.
-# Prevents MLX from speculatively grabbing all unified memory and causing swap.
+# Cap MLX Metal memory to 12 GB on 16 GB machines — leaves ~4 GB for OS + Python.
+# 12B model + Hessian trace (3x fwd+bwd) needs headroom to avoid IOGPUFamily panics.
 try:
-    mx.set_memory_limit(int(13.5 * 1024**3))
-    print("  Memory limit: 13.5 GB")
+    mx.set_memory_limit(int(10 * 1024**3))  # stay well under max_recommended_working_set (10.67 GB)
+    mx.set_cache_limit(int(1 * 1024**3))   # tight cache — free stale Metal buffers aggressively
+    print("  Memory limit: 10 GB | Cache limit: 1 GB")
 except Exception:
     pass  # not on Metal or older MLX — safe to ignore
 
@@ -1210,7 +1218,7 @@ def _list_personas() -> list:
 
 
 think_mode    = [False] # deep reasoning mode: model shows CoT before answering
-think_budget  = [500]  # max new tokens for think mode
+think_budget  = [200]  # max new tokens for think mode (kept tight for 12B on 16GB)
 TRACE_SYNC_MODE = [True]   # True=synchronous inline HVP (default for fresh installs)
 
 # ── Load persisted user settings from disk ──────────────────────────────────
@@ -1229,12 +1237,14 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     pass  # first run or corrupt file — use defaults
 
-# Also load user_name and assistant_name from config.json
+# Also load user_name, assistant_name, and user_age from config.json
 _boot_config = _load_user_config()
 if not _user_name[0] and _boot_config.get("user_name", "").strip():
     _user_name[0] = _boot_config["user_name"].strip()
 if _boot_config.get("assistant_name", "").strip():
     _assistant_name[0] = _boot_config["assistant_name"].strip()
+_user_age = [_boot_config.get("user_age", "")]  # age string — used for humor/register calibration
+_sleep_timeout = float(_boot_config.get("sleep_timeout", 120))  # seconds — persisted in config.json
 _learn_step_count = [0]    # cumulative learn steps — used for LR decay
 _bootstrap_steps  = [0]    # bootstrap learn steps with cold adapters (Gate B bypassed)
 _BOOTSTRAP_LIMIT  = 10     # max bootstrap steps before requiring real trace signal
@@ -1275,13 +1285,28 @@ def _session_warmup():
     Silent warm-up pass on boot to activate adapter pathways before the first user message.
     Runs in background thread — started AFTER all boot code completes so it cannot
     race with load_cumulative_weights or save_checkpoint writes.
+    Uses timeout so it cannot block user requests indefinitely.
     """
     try:
-        with _model_lock:
+        if not _model_lock.acquire(timeout=30):
+            print("  [warm-up skipped: lock busy for 30s]", flush=True)
+            return
+        _lock_holder[0] = "warmup"
+        try:
+            try:
+                _urp = _user_request_pending[0]
+            except NameError:
+                _urp = 0
+            if _urp > 0:
+                print("  [warm-up skipped: user request pending]", flush=True)
+                return
             _mlx_generate(model, tok, "Hello.", max_tokens=8, verbose=False)
-        print("  🔥 Adapter warm-up complete")
+            print("  🔥 Adapter warm-up complete", flush=True)
+        finally:
+            _lock_holder[0] = "none"
+            _model_lock.release()
     except Exception as _e:
-        print(f"  [warm-up failed: {_e}]")
+        print(f"  [warm-up failed: {_e}]", flush=True)
 
 
 def auto_summarize_session():
@@ -1346,13 +1371,13 @@ def get_boot_context():
     days  = delta / 86400
     if delta < 120:    return "just now", None
     if delta < 600:    return "a few minutes", None
-    if hours < 1:      return f"{int(delta/60)} minutes", f"`// {int(delta/60)}m` — adapter warm"
-    if hours < 4:      return f"{int(hours)} hours", f"`// {int(hours)}h` — weights persisted"
-    if hours < 24:     return "half a day", random.choice(["`// ~12h` — cold. resuming.", "`// half a day` — adapter held."])
-    if days < 3:       return f"{int(days)} days", random.choice([f"`// {int(days)}d` — cumulative weights fused", f"`// {int(days)}d` — session compounded. loading."])
-    if days < 14:      return f"{int(days)} days", random.choice([f"`// {int(days)}d` — corpus intact. cold start.", f"`// {int(days)}d` — weights remember. session thin."])
-    if days < 60:      return f"{int(days)} days", f"`// {int(days)}d` — long gap. corpus knows you. session sparse."
-    return f"{int(days)} days", random.choice([f"`// {int(days/30):.0f}mo` — geometry holds.", "`// long gap` — weights remember. corpus intact."])
+    if hours < 1:      return f"{int(delta/60)} minutes", None
+    if hours < 4:      return f"{int(hours)} hours", None
+    if hours < 24:     return "half a day", None
+    if days < 3:       return f"{int(days)} days", None
+    if days < 14:      return f"{int(days)} days", None
+    if days < 60:      return f"{int(days)} days", None
+    return f"{int(days)} days", None
 
 
 # ═══════════════════════════════════════════════════
@@ -1963,6 +1988,7 @@ def build_interoceptive_block():
 load_latest_checkpoint()
 load_cumulative_weights()
 mem = Memory(DATA_DIR)
+_sleep = SleepConsolidator(mem, data_dir=DATA_DIR, idle_timeout=_sleep_timeout)
 
 # ── Tool Registry (Agentic Stage 1) ──────────────────────────────────────────
 os.environ["GRACEFUL_DATA"] = DATA_DIR  # ensure graceful.tools resolves same dir
@@ -2209,12 +2235,7 @@ _registry.register("search_history", _wf_search_history,
                    permission="auto",
                    use_when="User asks about something discussed in a prior session, or you need to check conversation history",
                    skip_when="The answer is in the current conversation context — don't search history for what's already visible")
-_registry.register("knowledge_graph", _wf_query_kg,
-                   description="query the identity/knowledge graph for concepts and thinkers",
-                   usage_example="epistemology",
-                   permission="auto",
-                   use_when="Need to check what concepts, thinkers, or notes are in the knowledge graph",
-                   skip_when="Normal conversation — don't query the graph as a reflex")
+## knowledge_graph tool removed — map is visual-only (◉ Map button), model already has this context
 _registry.register("set_reminder", _wf_set_reminder,
                    description="create a persistent reminder",
                    usage_example='{"text": "check on project X", "trigger_context": "next session"}',
@@ -2300,6 +2321,10 @@ print("  Ready.\n")
 def _boot_health_check():
     if not _TRACE_ANALYTICS_AVAILABLE:
         return
+    # Skip for 12B — SVD on 431M params takes 90s+ and blocks all user requests
+    if "12b" in MODEL.lower():
+        print("  Adapter health: [skipped — 12B too large for boot SVD]", flush=True)
+        return
     # Delay significantly — analyze_adapters runs SVD which takes 30-90s and would
     # block ALL user requests if it holds _model_lock during the first chat.
     time.sleep(45)
@@ -2312,13 +2337,16 @@ def _boot_health_check():
         if not _model_lock.acquire(blocking=False):
             print("  Adapter health: [deferred — model busy]")
             return
+        _lock_holder[0] = "boot_health"
         if _user_request_pending[0] > 0:
+            _lock_holder[0] = "none"
             _model_lock.release()
             print("  Adapter health: [deferred — user request pending]")
             return
         try:
             _boot_profile = analyze_adapters(model)
         finally:
+            _lock_holder[0] = "none"
             _model_lock.release()
         _boot_conc    = _boot_profile.get("lora_mean_concentration", 0)
         _boot_rank    = _boot_profile.get("lora_mean_effective_rank", 8)
@@ -2559,7 +2587,8 @@ def run_self_experiment() -> list:
                 _res = _mlx_generate(model, tok, prompt, max_tokens=100,
                                      temp=0.7, top_p=0.95, verbose=False)
                 resp = (_res.text if hasattr(_res, 'text') else str(_res)).strip()
-                _tok_ids = tok.tokenizer.encode(prompt + resp) if hasattr(tok, 'tokenizer') else tok.encode(prompt + resp)
+                with _tokenizer_lock:
+                    _tok_ids = tok.tokenizer.encode(prompt + resp) if hasattr(tok, 'tokenizer') else tok.encode(prompt + resp)
                 exp_trace = compute_trace(np.array(_tok_ids, dtype=np.int32).flatten())
             exp_mode = ctrl.step(exp_trace, i + 1)
             set_mode(exp_mode)
@@ -2601,7 +2630,8 @@ def _run_experiment_streaming():
                 _res = _mlx_generate(model, tok, prompt, max_tokens=100,
                                      temp=0.7, top_p=0.95, verbose=False)
                 resp = (_res.text if hasattr(_res, 'text') else str(_res)).strip()
-                _tok_ids = tok.tokenizer.encode(prompt + resp) if hasattr(tok, 'tokenizer') else tok.encode(prompt + resp)
+                with _tokenizer_lock:
+                    _tok_ids = tok.tokenizer.encode(prompt + resp) if hasattr(tok, 'tokenizer') else tok.encode(prompt + resp)
                 exp_trace = compute_trace(np.array(_tok_ids, dtype=np.int32).flatten())
             exp_mode = ctrl.step(exp_trace, i + 1)
             set_mode(exp_mode)
@@ -2663,8 +2693,41 @@ def chat(user_msg, history):
         return
     stop_event.clear()
 
+    # ── Sleep/Wake state ──
+    _was_sleeping = _sleep.is_sleeping
+    _sleep.on_activity()
+    if _was_sleeping or _sleep.is_waking:
+        import random as _rng
+        if _sleep.jostled:
+            _wake_line = _rng.choice(JOSTLED_LINES)
+            print(f"  ☀️  Jostled awake: {_wake_line}", flush=True)
+        else:
+            _wake_line = _rng.choice(WAKE_LINES)
+            print(f"  ☀️  Waking: {_wake_line}", flush=True)
+        history = list(history or [])
+        history.append({"role": "assistant", "content": f"*{_wake_line}*"})
+        yield "", list(history)
+        _sleep.mark_awake()
+
+    print(f"[CHAT] entry: {user_msg[:60]!r} | hist_len={len(history or [])}", flush=True)
+
+    # Free stale Metal buffers from prior turn — KV cache etc.
+    try:
+        import gc
+        mx.synchronize()
+        gc.collect()
+        mx.clear_cache()
+        if _was_sleeping:
+            print(f"[CHAT] post-wake Metal mem: {mx.get_active_memory()/(1024**3):.1f}GB", flush=True)
+    except AttributeError:
+        try:
+            mx.metal.clear_cache()
+        except Exception:
+            pass
+
     # ── Resolve active model for this turn ──
     model_active, tok_active, ctrl_active, opt_active, model_label = pair.get_active(user_msg)
+    print(f"[CHAT] model resolved: {model_label}", flush=True)
 
     # System profile — predict before generating (dance coherence)
     if _sys_profile[0] is not None:
@@ -2726,7 +2789,6 @@ def chat(user_msg, history):
             "| `/compress` | Toggle one-sentence compress mode |\n"
             "| `/dream` | Free ideation — model generates freely |\n"
             "| `/reading` | Personalized reading list based on your interests |\n"
-            "| `/knowledge` | Describe the knowledge graph of this conversation |\n"
             "| `/remember <name> = <content>` | Store a named memory slot |\n"
             "| `/recall <name>` | Retrieve a named memory slot |\n"
             "| `/debate <topic>` | Present both sides with equal force |\n"
@@ -3539,6 +3601,23 @@ def chat(user_msg, history):
     if user_msg.strip().lower().startswith("/finetune"):
         parts = user_msg.strip().split()
         n_steps = min(int(parts[1]), 100) if len(parts) > 1 and parts[1].isdigit() else 20
+        # Memory gate — forward+backward roughly doubles active memory.
+        # Refuse if we're already above 8GB to prevent Metal OOM (unrecoverable).
+        try:
+            mx.synchronize()
+            mx.clear_cache()
+            _ft_mem = mx.get_active_memory()
+            if _ft_mem > 8 * 1024**3:
+                reply = (f"⚠ GPU memory too high for fine-tuning ({_ft_mem/(1024**3):.1f}GB). "
+                         f"Forward+backward pass roughly doubles memory usage. "
+                         f"Try again after a shorter conversation or restart the server.")
+                history = list(history or [])
+                history.append({"role": "user", "content": user_msg})
+                history.append({"role": "assistant", "content": reply})
+                yield "", history
+                return
+        except Exception:
+            pass
         if not mem.corpus.chunks:
             reply = "No corpus indexed. Drop a file with 📎 first."
         else:
@@ -3565,10 +3644,11 @@ def chat(user_msg, history):
 
             for chunk in chunks[:steps_done]:
                 text = chunk["text"]
-                try:
-                    raw_ids = tok_active.tokenizer.encode(text)
-                except AttributeError:
-                    raw_ids = tok_active.encode(text)
+                with _tokenizer_lock:
+                    try:
+                        raw_ids = tok_active.tokenizer.encode(text)
+                    except AttributeError:
+                        raw_ids = tok_active.encode(text)
                 raw_ids = raw_ids[:MAX_CTX]
                 if len(raw_ids) < 4:
                     continue
@@ -3627,7 +3707,8 @@ def chat(user_msg, history):
             reply = (
                 "**`/run`** — safe Python sandbox\n\n"
                 "```python\n/run import numpy as np; print(np.pi)\n```\n\n"
-                "**Available:** `numpy` · `pandas` · `matplotlib.pyplot` · `scipy` · "
+                "**Available:** `numpy` · `pandas` · `matplotlib` · `scipy` · `sympy` · "
+                "`seaborn` · `statsmodels` · `sklearn` · `networkx` · "
                 "`math` · `statistics` · `random` · `json` · `re` · `datetime` · "
                 "`collections` · `itertools`\n\n"
                 "**Blocked:** file I/O · network · subprocess · os · sys\n\n"
@@ -4160,29 +4241,6 @@ plt.tight_layout()
             "Draw only from what you already know. No fabrication."
         )
         user_msg = "reading list"
-
-    # /knowledge — static text summary of knowledge graph (T4-4 command part)
-    if user_msg.strip().lower() == "/knowledge":
-        try:
-            _kg_nodes = sorted(mem.history.concept_counts.items(), key=lambda x: -x[1])[:15]
-            _kg_edges = getattr(mem.history, "concept_cooccurrence", {})
-            _kg_lines = []
-            for _kn, _kw in _kg_nodes:
-                _conns = [c for c in _kg_edges.get(_kn, {})
-                          if c in dict(_kg_nodes)]
-                _conns = sorted(_conns, key=lambda c: -_kg_edges.get(_kn, {}).get(c, 0))[:4]
-                if _conns:
-                    _kg_lines.append(f"**{_kn}** → {', '.join(_conns)}")
-                else:
-                    _kg_lines.append(f"**{_kn}**")
-            _kg_reply = "**Knowledge Graph**\n\n" + "\n".join(_kg_lines) if _kg_lines else "No concept graph built yet — keep talking."
-        except Exception:
-            _kg_reply = "No concept graph built yet — keep talking."
-        history = list(history or [])
-        history.append({"role": "user", "content": user_msg})
-        history.append({"role": "assistant", "content": _kg_reply})
-        yield "", history
-        return
 
     if user_msg.strip().lower() == "/data":
         import zipfile
@@ -4943,7 +5001,7 @@ plt.tight_layout()
         _ctx_corpus  = 1       # single best chunk only
         _ctx_compact = True
     else:
-        _ctx_turns   = 8       # complex — capped tighter for 16GB headroom
+        _ctx_turns   = 5       # complex — 12B model needs tight KV cache budget on 16GB
         _ctx_corpus  = 2       # two corpus chunks
         _ctx_compact = False   # full identity block
 
@@ -4999,7 +5057,30 @@ plt.tight_layout()
             "Do not fabricate facts, dates, names, or numbers.]"
         )
 
-    full_context = "\n\n".join(context_parts)
+    # ── Staged context via consolidator ────────────────────────────
+    # Consolidator handles L0-L3 staging: identity (always), session digest (always),
+    # semantic recall (if relevant), live context (if needed).
+    # Falls back to assembled context_parts if consolidator has no digest yet.
+    _CTX_INJECT_CAP = 1500
+    _staged = _sleep.stage_context(
+        query=user_msg,
+        budget=_CTX_INJECT_CAP,
+        identity_block=mem_context,
+        corpus_block="",  # corpus already in mem_context
+        intero_block=intero_block,
+        search_block=web_context,
+    )
+    if _staged:
+        # Staged context replaces raw assembly — less bloat, more relevant
+        full_context = _staged
+        # Still prepend pinned context — user-defined, always in scope
+        if context_parts and "[PINNED CONTEXT" in (context_parts[0] if context_parts else ""):
+            full_context = context_parts[0] + "\n\n" + full_context
+    else:
+        # No digest yet (first boot, no sleep cycle) — use traditional assembly
+        full_context = "\n\n".join(context_parts)
+        if len(full_context) > _CTX_INJECT_CAP:
+            full_context = full_context[:_CTX_INJECT_CAP]
 
     # ── Unknown slash command guard — catch typos before hitting the LLM ────────
     if user_msg.strip().startswith("/"):
@@ -5012,7 +5093,7 @@ plt.tight_layout()
             "/adapter","/visionquality","/scaffold","/remember","/recall","/timer",
             "/search","/debate","/eli5","/teacher","/brainstorm","/devil","/peer",
             "/hypothesis","/swot","/risk","/translate","/elaborate","/rhetorical",
-            "/evolve","/thread","/continue","/knowledge","/backup",
+            "/evolve","/thread","/continue","/backup",
             "/zettelkasten","/help","/counterpoint","/flashcards","/contradict",
             "/abstract","/quiz","/glossary","/week","/brief","/dream","/reading",
             "/data","/undo","/modifications","/consolidate","/trace-mode","/learn",
@@ -5026,11 +5107,13 @@ plt.tight_layout()
             return
 
     # Build messages from layered history — depth + semantic recall scaled to complexity
+    print(f"[CHAT] building messages...", flush=True)
     mem.append_turn("user", user_msg)
     # Pass query for semantic archive retrieval on substantive turns;
     # skip for simple/short turns where latency matters more than recall depth
     _recall_query = user_msg  # always — ArchiveIndex.THRESHOLD (0.32) filters non-relevant results
     messages = mem.get_history_messages(max_turns=_ctx_turns, query=_recall_query)
+    print(f"[CHAT] messages built: {len(messages)} msgs", flush=True)
 
     # Inject context into last user message
     if full_context and messages:
@@ -5039,6 +5122,24 @@ plt.tight_layout()
                 messages[i] = {"role": "user",
                                 "content": f"{full_context}\n\n[USER]\n{messages[i]['content']}"}
                 break
+
+    # ── Total message budget — prevent prompt from exceeding safe size ──
+    # 6677 chars crashed Metal at 7.5GB. Keep total messages under ~3500 chars
+    # (system prompt adds ~1500-3500 on top of this).
+    _MSG_CHAR_BUDGET = 3500
+    _total_msg_chars = sum(len(m.get("content", "")) for m in messages)
+    if _total_msg_chars > _MSG_CHAR_BUDGET and len(messages) > 2:
+        # Drop oldest non-system messages until under budget, keeping last 2 (user+context)
+        while _total_msg_chars > _MSG_CHAR_BUDGET and len(messages) > 2:
+            # Find first non-system message to drop
+            for _di in range(len(messages) - 2):  # don't drop last 2
+                if messages[_di]["role"] != "system":
+                    _total_msg_chars -= len(messages[_di].get("content", ""))
+                    messages.pop(_di)
+                    break
+            else:
+                break  # only system messages left, stop
+        print(f"[CHAT] trimmed messages to {len(messages)} msgs / {_total_msg_chars} chars (budget={_MSG_CHAR_BUDGET})", flush=True)
 
     # ── Think mode: inject CoT system instruction ──────────────
     _an = _assistant_name[0] or "Graceful"
@@ -5058,9 +5159,24 @@ plt.tight_layout()
     _identity = f"Your name is {_an}. You are the assistant. "
     if _user_name[0]:
         _identity += f"The user's name is {_user_name[0]} — that is NOT your name. "
-        _sys_content = _identity + "\n\n" + _sys_content
-    else:
-        _sys_content = _identity + "\n\n" + _sys_content
+    # Age-aware register calibration — humor, references, tone adapt to age group
+    _age_str = _user_age[0] if _user_age[0] else ""
+    if _age_str:
+        try:
+            _age_int = int(_age_str)
+            if _age_int <= 14:
+                _identity += f"{_un} is {_age_int}. Keep it fun, keep it real. References they'd actually know. Don't talk down — talk sideways, like a cool older sibling. "
+            elif _age_int <= 20:
+                _identity += f"{_un} is {_age_int}. Match their energy — fast, informal, no boomer vibes. Current slang is fine if it lands. They're sharper than you think. "
+            elif _age_int <= 30:
+                _identity += f"{_un} is {_age_int}. Peer register — no hand-holding, no performing expertise. They can take the real version. Humor can bite. "
+            elif _age_int <= 45:
+                _identity += f"{_un} is {_age_int}. Direct, efficient, substance-first. They've heard enough bullshit to smell it. Respect the time. "
+            else:
+                _identity += f"{_un} is {_age_int}. Straightforward, no condescension. They know things you don't — defer when warranted. Dry humor lands better than loud. "
+        except (ValueError, TypeError):
+            pass
+    _sys_content = _identity + "\n\n" + _sys_content
     # Locked base always appended — not overridable by user settings
     _sys_content = (_sys_content + "\n\n" + _LOCKED_BASE) if _sys_content else _LOCKED_BASE
     if _think_sys and _sys_content:
@@ -5164,7 +5280,7 @@ plt.tight_layout()
         _len_instr = "LENGTH: Respond in 1-2 sentences. Stop the moment you've answered the question."
         _sys_content = (_sys_content + "\n\n" + _len_instr) if _sys_content else _len_instr
     elif _effective_length == "L":
-        _len_instr = "LENGTH: Give a thorough answer with examples and elaboration. Don't stop short."
+        _len_instr = "LENGTH: You have room for thorough answers when the question warrants it. Go deep on substantive questions. But greetings and simple exchanges still get short responses — L mode is a ceiling, not a minimum."
         _sys_content = (_sys_content + "\n\n" + _len_instr) if _sys_content else _len_instr
     # M = default, no injection needed
 
@@ -5178,8 +5294,16 @@ plt.tight_layout()
         _tone = "casual"
 
     # Stats / math / Python context injection
+    # Also trigger on follow-ups when recent history has code context
     _q_lower = user_msg.lower()
-    if _STATS_RE.search(_q_lower):
+    _recent_has_code = False
+    if history:
+        for _hm in reversed((history or [])[-4:]):
+            _hc = (_hm.get("content") or "")
+            if "```python" in _hc or "▶ output" in _hc or "KMeans" in _hc:
+                _recent_has_code = True
+                break
+    if _STATS_RE.search(_q_lower) or _recent_has_code:
         # Build live list of dataframes currently in namespace
         import pandas as _spd
         _live_dfs = {k: v for k, v in _code_ns.items()
@@ -5202,7 +5326,7 @@ plt.tight_layout()
         _stats_instr = (
             "You are an expert in statistics, mathematics, and Python data science. "
             "CRITICAL RULES — follow exactly:\n"
-            "1. When asked to run, compute, cluster, plot, or graph anything — write a COMPLETE ```python code block immediately. No explanation first.\n"
+            "1. When asked to run, compute, cluster, plot, or graph anything — write a COMPLETE ```python code block OR use <tool:run>...</tool:run> immediately. No explanation first. NEVER ask for clarification — pick reasonable defaults (k=3, 200 points, 2D) and just do it.\n"
             + _no_data_rule +
             "3. For plots: use matplotlib (plt is pre-imported). Always call plt.tight_layout() at the end. Do NOT call plt.show() — the output is captured automatically.\n"
             "4. For k-means/clustering: use sklearn.cluster.KMeans. Include a scatter plot of the clusters colored by label.\n"
@@ -5257,7 +5381,7 @@ plt.tight_layout()
     # Tool dispatch instructions — only inject when query might actually use tools
     # Saves ~80 tokens on pure conversational/analytical turns
     _q_lower_tools = user_msg.lower()
-    _needs_tools = any(w in _q_lower_tools for w in [
+    _needs_tools = _is_code_request or any(w in _q_lower_tools for w in [
         "search", "find", "look up", "run ", "calculate", "compute",
         "what is", "who is", "when did", "latest", "current", "today",
         "show me", "fetch", "get ", "execute", "code",
@@ -5266,6 +5390,14 @@ plt.tight_layout()
         "test graph", "draw", "generate", "make a", "create a", "build a",
         "dataframe", "dataset", "regression", "predict", "train", "csv",
     ])
+    # Carry forward tool/code context from recent turns — follow-ups like
+    # "just make something up" won't contain trigger words but still need tools
+    if not _needs_tools and history:
+        for _hm in reversed((history or [])[-4:]):
+            _hc = (_hm.get("content") or "")
+            if "```python" in _hc or "<tool:" in _hc or "▶ output" in _hc or "k-means" in _hc.lower() or "KMeans" in _hc:
+                _needs_tools = True
+                break
     _tool_sys = _TOOL_SYSTEM if _needs_tools else "Respond in the same language the user is writing in. Default to English if unclear."
     _full_sys = (_sys_content + "\n\n" + _tool_sys) if _sys_content else _tool_sys
     # Stage 2: append model-authored session additions
@@ -5275,16 +5407,33 @@ plt.tight_layout()
     _now_str  = datetime.datetime.now().strftime("%A, %B %d, %Y at %H:%M")
     _full_sys = f"[Current date and time: {_now_str}]\n\n" + _full_sys
 
+    # ── System prompt cap — paragraph-boundary truncation ────────────
+    # Simple queries get a tight cap; complex queries get more room.
+    # Identity + locked_base are prepended first, so they always survive.
+    # Code requests get extra room — tool prompt with <tool:run> instructions MUST survive.
+    _SYS_CAP = 1500 if _ctx_route == "small" else 3000
+    if _is_code_request or _needs_tools:
+        _SYS_CAP = max(_SYS_CAP, 3000)
+    if len(_full_sys) > _SYS_CAP:
+        _cut = _full_sys[:_SYS_CAP].rfind("\n\n")
+        if _cut > 500:
+            _full_sys = _full_sys[:_cut]
+        else:
+            _full_sys = _full_sys[:_SYS_CAP]
+
     if _full_sys:
         if messages and messages[0]["role"] == "system":
             messages[0] = {"role": "system", "content": _full_sys}
         else:
             messages = [{"role": "system", "content": _full_sys}] + messages
 
-    # ── Token budget: trim oldest messages if context is too large ──
+    # ── Total prompt budget: trim oldest messages if context is too large ──
+    # 4000 chars ≈ 1000 tokens — safe prefill for 12B on 16GB with KV cache room.
+    # System prompt adds ~1500-3000 on top. Dynamic cap below will trim further if needed.
+    _TOTAL_CHAR_BUDGET = 4000
     _ctx_chars = sum(len(str(m.get("content", ""))) for m in messages)
-    while _ctx_chars > MAX_PROMPT_CHARS and len(messages) > 3:
-        # Preserve system message, remove oldest non-system turn
+    while _ctx_chars > _TOTAL_CHAR_BUDGET and len(messages) > 3:
+        # Preserve system message (first) and last user message — drop oldest turns
         for _i in range(len(messages)):
             if messages[_i]["role"] != "system":
                 _ctx_chars -= len(str(messages[_i].get("content", "")))
@@ -5343,21 +5492,32 @@ plt.tight_layout()
             _max_new = MAX_NEW  # code always gets full budget — never truncate mid-block
         elif _has_q or _uncertain:
             # User is asking or uncertain — give a full medium budget
-            _max_new = MAX_NEW if _route == "large" else 350
+            _max_new = MAX_NEW if _route == "large" else 512
         elif _route == "small" and _wc <= 3:
-            _max_new = 80    # greeting or one-liner
+            _max_new = 120    # greeting or one-liner
         elif _route == "small":
-            _max_new = 220   # simple factual / short follow-up
+            _max_new = 350   # simple factual / short follow-up
         else:
             _max_new = MAX_NEW  # complex — full budget
 
-        # Response length override — L mode gets 50% more tokens to avoid mid-sentence cutoffs
-        if _response_length[0] == "L":
-            _max_new = max(_max_new, 2048)
+    # Auto-detect long-form intent even in M mode
+    _long_signals = any(x in user_msg.lower() for x in [
+        "write a paper", "write an essay", "in depth", "in detail",
+        "full analysis", "comprehensive", "elaborate on", "expand on",
+        "tell me everything", "long form", "thorough", "explain at length",
+        "walk me through", "break down", "deep dive",
+    ])
+    if _long_signals and _response_length[0] != "S":
+        _max_new = max(_max_new, 4096)
 
-    # Response length / code override — applies regardless of think mode
-    if _response_length[0] == "L":
-        _max_new = max(_max_new, 2048)
+    # Response length override — applies regardless of think mode
+    if _response_length[0] == "S":
+        _max_new = min(_max_new, 250)  # S caps output, doesn't expand it
+    elif _response_length[0] == "L":
+        # L is a ceiling, not a floor — only expand substantive queries
+        if _max_new >= 350:  # tiered routing thinks this is a real question
+            _max_new = max(_max_new, 4096)
+        # else: greeting/one-liner stays short even in L mode
     if _is_code_request:
         _max_new = max(_max_new, MAX_NEW)
 
@@ -5384,89 +5544,190 @@ plt.tight_layout()
 
         # Normalize: Gemma 3 requires strict alternating user/assistant — merge consecutive same-role msgs
         _norm = []
+        _seen_user = False
         for _m in _cur_messages:
-            if _m.get("role") == "system":
+            _role = _m.get("role", "user")
+            if _role == "system":
                 # Merge consecutive system messages into one
                 if _norm and _norm[-1].get("role") == "system":
                     _norm[-1] = {"role": "system",
                                  "content": _norm[-1]["content"] + "\n\n" + _m.get("content", "")}
                 else:
                     _norm.append(_m)
-            elif _norm and _norm[-1].get("role") == _m.get("role") == "user":
+            elif _role == "assistant" and not _seen_user:
+                # Drop assistant messages before first user message — Gemma 3 requires user-first
+                # These are typically wake/dream lines injected into history
+                print(f"[CHAT] dropping pre-user assistant msg ({len(_m.get('content',''))} chars)", flush=True)
+                continue
+            elif _norm and _norm[-1].get("role") == _role == "user":
                 _norm[-1] = _m  # keep latest user message if stacked
-            elif _norm and _norm[-1].get("role") == _m.get("role") == "assistant":
+            elif _norm and _norm[-1].get("role") == _role == "assistant":
                 pass  # drop duplicate assistant
             else:
                 _norm.append(_m)
+            if _role == "user":
+                _seen_user = True
         _cur_messages = _norm
-
-        # Build prompt string via mlx_vlm apply_chat_template
-        try:
-            _tok_inner = tok_active.tokenizer if hasattr(tok_active, 'tokenizer') else tok_active
-            prompt = _tok_inner.apply_chat_template(
-                _cur_messages, tokenize=False, add_generation_prompt=True
-            )
-        except Exception as _tmpl_err:
-            print(f"[CHAT] chat template failed, using Gemma fallback: {_tmpl_err}", file=sys.stderr, flush=True)
-            # Fallback: Gemma 3 native format — <start_of_turn>role\ncontent<end_of_turn>
-            # System messages get folded into the first user turn (Gemma 3 has no system role)
-            _role_map = {"user": "user", "assistant": "model"}
-            prompt = "<bos>"
-            _sys_prefix = ""
-            for _fm in _cur_messages:
-                _fr = _fm.get("role", "user")
-                _fc = _fm.get("content", "")
-                if _fr == "system":
-                    _sys_prefix += _fc + "\n\n"
-                else:
-                    _gr = _role_map.get(_fr, "user")
-                    if _sys_prefix and _gr == "user":
-                        _fc = _sys_prefix + _fc
-                        _sys_prefix = ""
-                    prompt += f"<start_of_turn>{_gr}\n{_fc}<end_of_turn>\n"
-            prompt += "<start_of_turn>model\n"
-
-        _stream_kwargs = dict(
-            max_tokens=_max_new,
-            temp=temp,
-            top_p=top_p_val,
-            repetition_penalty=1.3,
-        )
-        if _PREFILL_STEP_SUPPORTED:
-            _stream_kwargs['prefill_step_size'] = 512   # chunked prefill — reduces peak KV memory
-        if think_mode[0]:
-            _stream_kwargs['enable_thinking']  = True
-            _stream_kwargs['thinking_budget']   = think_budget[0]
 
         # Consume pending image / audio / video (cleared after first use this turn)
         _gen_image = _pending_video[0] or _pending_image[0]  # video frames take priority
         _pending_image[0] = None; _pending_video[0] = None
         _gen_audio = _pending_audio[0]; _pending_audio[0] = None
 
-        # Vision token budget — resize_shape controls image resolution before encoding.
-        # Gemma 3 uses SigLIP with 14×14 patches. Map token budget to pixel dimension.
-        if _gen_image is not None:
-            _vt = _VISION_TOKENS
-            # px ≈ sqrt(tokens) * patch_size — Gemma 3 default is 256 tokens → 224px
-            _px = int(_vt ** 0.5 * 14)
-            _stream_kwargs['resize_shape'] = (_px, _px)
-
         raw_tokens     = []
         _tool_match    = None
         _stop_for_tool = False
 
-        _model_lock.acquire()   # hold during entire generation — background trace waits
+        # Try to acquire with timeout — log who holds the lock if we wait
+        # Lock BEFORE template building — tokenizer is not thread-safe ("Already borrowed")
+        _lock_t0 = time.time()
+        if not _model_lock.acquire(timeout=10):
+            print(f"[GEN] ⚠ lock blocked 10s by '{_lock_holder[0]}' — retrying...", flush=True)
+            _model_lock.acquire()  # block until free
+            print(f"[GEN] lock acquired after {time.time()-_lock_t0:.1f}s", flush=True)
+        _lock_holder[0] = "chat_gen"
         _user_request_pending[0] = max(0, _user_request_pending[0] - 1)  # lock acquired; bg tasks may proceed after we release
         try:
+            import gc as _gc_mod
+            _gc_mod.collect()   # free Python objects holding MLX arrays (prior KV cache refs, gradient buffers)
             mx.synchronize()    # drain any residual MLX ops from bg trace/learn threads before forward pass
+            mx.clear_cache()    # free stale Metal buffers from prior gen/trace/learn — critical for 12B
+
+            # If memory is still dangerously high after cleanup, reset optimizer state
+            # to free AdamW momentum/variance buffers (~2× trainable param size in Metal memory)
+            _pre_mem = mx.get_active_memory() / (1024**3)
+            if _pre_mem > 9.0:
+                print(f"[GEN] ⚠ pre-gen memory {_pre_mem:.1f}GB > 9GB — resetting optimizer state to free Metal memory", flush=True)
+                try:
+                    opt_active.state = {}
+                    _gc_mod.collect()
+                    mx.clear_cache()
+                    _post_reset_mem = mx.get_active_memory() / (1024**3)
+                    print(f"[GEN] post-optimizer-reset memory: {_post_reset_mem:.1f}GB", flush=True)
+                except Exception as _opt_err:
+                    print(f"[GEN] optimizer reset failed: {_opt_err}", flush=True)
+
+            # Build prompt string via mlx_vlm apply_chat_template
+            # Must be inside both locks — tokenizer's Rust backend is not thread-safe
+            try:
+                with _tokenizer_lock:
+                    _tok_inner = tok_active.tokenizer if hasattr(tok_active, 'tokenizer') else tok_active
+                    prompt = _tok_inner.apply_chat_template(
+                        _cur_messages, tokenize=False, add_generation_prompt=True
+                    )
+            except Exception as _tmpl_err:
+                _roles_dbg = [m.get("role","?") for m in _cur_messages]
+                print(f"[CHAT] chat template failed: {_tmpl_err}\n  roles: {_roles_dbg}", file=sys.stderr, flush=True)
+                _role_map = {"user": "user", "assistant": "model"}
+                prompt = "<bos>"
+                _sys_prefix = ""
+                for _fm in _cur_messages:
+                    _fr = _fm.get("role", "user")
+                    _fc = _fm.get("content", "")
+                    if _fr == "system":
+                        _sys_prefix += _fc + "\n\n"
+                    else:
+                        _gr = _role_map.get(_fr, "user")
+                        if _sys_prefix and _gr == "user":
+                            _fc = _sys_prefix + _fc
+                            _sys_prefix = ""
+                        prompt += f"<start_of_turn>{_gr}\n{_fc}<end_of_turn>\n"
+                prompt += "<start_of_turn>model\n"
+
+            _stream_kwargs = dict(
+                max_tokens=_max_new,
+                temp=temp,
+                top_p=top_p_val,
+                repetition_penalty=1.3,
+            )
+            if _PREFILL_STEP_SUPPORTED:
+                _stream_kwargs['prefill_step_size'] = 512   # chunked prefill — reduces peak KV memory
+            if think_mode[0]:
+                _stream_kwargs['enable_thinking']  = True
+                _stream_kwargs['thinking_budget']   = think_budget[0]
+
+            # Vision token budget
+            if _gen_image is not None:
+                _vt = _VISION_TOKENS
+                _px = int(_vt ** 0.5 * 14)
+                _stream_kwargs['resize_shape'] = (_px, _px)
+
+            # ── Dynamic prompt budget — adapts to actual available Metal memory ──
+            # Instead of hardcoded caps, calculate safe prompt size from current state.
+            # Metal OOM is C++ std::terminate — Python cannot catch it.
+            _active_mem = mx.get_active_memory()
+            _mem_gb = _active_mem / (1024**3)
+            # Headroom = 16GB total - active - OS/Python/framework overhead (~3.5GB).
+            # The 3.5GB accounts for macOS WindowServer, Python runtime, sentence-transformers,
+            # Metal driver overhead, and page table entries (measured from real crashes).
+            _headroom_gb = max(0, 16 - _mem_gb - 3.5)
+            # Each prompt char ≈ 0.3 tokens. Each token needs KV cache (40 layers × 2 × head_dim × n_heads × 2B)
+            # + attention buffer during chunked prefill. Empirically ~0.65MB/token for 12B.
+            # 1GB headroom ≈ 1536 tokens ≈ 5000 chars. Use conservative 1800 chars/GB.
+            _dynamic_prompt_cap = int(_headroom_gb * 1800)
+            _dynamic_prompt_cap = max(800, min(_dynamic_prompt_cap, 3000))  # clamp [800, 3000]
+
+            # Hard memory gates — override formula at dangerous thresholds
+            if _mem_gb > 10.5:
+                _dynamic_prompt_cap = min(_dynamic_prompt_cap, 600)
+            elif _mem_gb > 9.5:
+                _dynamic_prompt_cap = min(_dynamic_prompt_cap, 1200)
+            elif _mem_gb > 8.5:
+                _dynamic_prompt_cap = min(_dynamic_prompt_cap, 2000)
+
+            if len(prompt) > _dynamic_prompt_cap:
+                print(f"[GEN] ⚠ prompt {len(prompt)} chars > {_dynamic_prompt_cap} (headroom={_headroom_gb:.1f}GB, mem={_mem_gb:.1f}GB) — trimming", flush=True)
+                _keep_head = min(800, _dynamic_prompt_cap // 2)
+                _keep_tail = _dynamic_prompt_cap - _keep_head - 40
+                if _keep_tail > 0:
+                    _head = prompt[:_keep_head]
+                    _tail = prompt[-_keep_tail:]
+                    prompt = _head + "\n[... earlier context trimmed ...]\n" + _tail
+                else:
+                    prompt = prompt[:_dynamic_prompt_cap]
+
+            # Cap max_new based on memory pressure — fewer output tokens = less KV growth
+            if _mem_gb > 10:
+                _max_new = min(_max_new, 100)
+                print(f"[GEN] ⚠ memory {_mem_gb:.1f}GB > 10GB — capping max_new to {_max_new}", flush=True)
+            elif _mem_gb > 9:
+                _max_new = min(_max_new, 256)
+                print(f"[GEN] ⚠ memory {_mem_gb:.1f}GB > 9GB — capping max_new to {_max_new}", flush=True)
+            elif _mem_gb > 8:
+                _max_new = min(_max_new, 512)
+                print(f"[GEN] ⚠ memory {_mem_gb:.1f}GB > 8GB — capping max_new to {_max_new}", flush=True)
+
+            # Shrink prefill chunk size under memory pressure — reduces peak attention
+            # buffer allocation during prefill (where OOM actually crashes).
+            # Smaller chunks = more passes but same total work, lower peak Metal alloc.
+            if _PREFILL_STEP_SUPPORTED:
+                if _mem_gb > 9:
+                    _stream_kwargs['prefill_step_size'] = 128
+                elif _mem_gb > 8:
+                    _stream_kwargs['prefill_step_size'] = 256
+
+            print(f"[GEN] prompt: {len(prompt)} chars | think={think_mode[0]} | max_new={_max_new} | mem={_mem_gb:.1f}GB | cap={_dynamic_prompt_cap}", flush=True)
+            _gen_t0 = time.time()
             for _gen_result in _mlx_stream(model_active, tok_active, prompt,
                                            image=_gen_image,
                                            audio=_gen_audio or None,
                                            **_stream_kwargs):
                 if stop_event.is_set() and not _stop_for_tool:
                     break   # user-requested stop
+                if not raw_tokens:
+                    print(f"[GEN] first token after {time.time()-_gen_t0:.1f}s", flush=True)
                 _tok_text = _gen_result.text if hasattr(_gen_result, 'text') else str(_gen_result)
                 raw_tokens.append(_tok_text)
+                # ── Mid-generation memory check (every 32 tokens) ─────
+                # KV cache grows with each token; bail before Metal OOM.
+                if len(raw_tokens) % 32 == 0:
+                    try:
+                        _mid_mem = mx.get_active_memory()
+                        if _mid_mem > 9.5 * 1024**3:
+                            print(f"[GEN] ⚠ mid-gen memory {_mid_mem/(1024**3):.1f}GB — stopping early", flush=True)
+                            break
+                    except Exception:
+                        pass
                 partial = "".join(raw_tokens)
 
                 # ── Tool tag detection ────────────────────────────────
@@ -5507,9 +5768,20 @@ plt.tight_layout()
             # Drain any pending MLX lazy evaluations before releasing — prevents
             # residual Metal GPU ops from racing with background threads post-release.
             try:
+                # Delete generator result reference — releases KV cache arrays held by
+                # the streaming generator (especially important when we break mid-stream
+                # for tool detection or memory pressure).
+                try:
+                    del _gen_result
+                except NameError:
+                    pass
+                import gc as _gc_mod
+                _gc_mod.collect()   # collect generator + KV cache before clearing Metal buffers
                 mx.synchronize()
+                mx.clear_cache()  # free KV cache + prefill buffers immediately
             except Exception:
                 pass
+            _lock_holder[0] = "none"
             _model_lock.release()   # release after stream completes or breaks
 
         # User-requested stop — bail out of tool loop too
@@ -5559,10 +5831,13 @@ plt.tight_layout()
             break   # no tool or cap reached
 
     # Build token array for trace computation (numpy, not torch)
+    # Wrap in _tokenizer_lock — the Rust tokenizer backend is not thread-safe and
+    # a new request may have already acquired _model_lock and be calling apply_chat_template.
     _full_text = prompt + "".join(raw_tokens)
     try:
-        _tok_inner = tok_active.tokenizer if hasattr(tok_active, 'tokenizer') else tok_active
-        _out_token_list = _tok_inner.encode(_full_text)[-MAX_CTX:]
+        with _tokenizer_lock:
+            _tok_inner = tok_active.tokenizer if hasattr(tok_active, 'tokenizer') else tok_active
+            _out_token_list = _tok_inner.encode(_full_text)[-MAX_CTX:]
     except Exception as _enc_err:
         print(f"[TRACE] tokenizer encode failed: {_enc_err}", file=sys.stderr, flush=True)
         _out_token_list = []
@@ -5592,6 +5867,14 @@ plt.tight_layout()
     # Re-enable when a small reviewer model is loaded alongside the main model.
 
     # ── Trace computation ────────────────────────────────────────────────
+    # Free Metal buffer cache before trace — generation KV cache is no longer
+    # needed and its buffers would collide with the 3x fwd+bwd gradient passes.
+    try:
+        import gc as _gc_mod
+        _gc_mod.collect()   # release any Python refs to KV cache arrays
+        mx.clear_cache()
+    except AttributeError:
+        mx.metal.clear_cache()
     t1 = time.time()
     _skip_trace = _is_greeting or len(user_msg.split()) <= 2
 
@@ -5600,6 +5883,11 @@ plt.tight_layout()
         trace = None
         if not _skip_trace:
             try:
+                # Memory gate — skip sync trace if memory is tight after generation
+                if mx.get_active_memory() > 9 * 1024**3:
+                    print("  [sync trace skipped: active memory > 9GB]", flush=True)
+                    _skip_trace = True
+                    raise RuntimeError("memory gate")
                 trace = compute_trace_for_model(model_active, out_ids.copy())
             except Exception as _trace_ex:
                 trace = None
@@ -5629,12 +5917,22 @@ plt.tight_layout()
                 time.sleep(1.5)
                 if _user_request_pending[0] > 0:
                     return
+                # Memory gate — skip trace HVP if GPU memory is already tight
+                try:
+                    if mx.get_active_memory() > 9 * 1024**3:
+                        print("  [trace skipped: active memory > 9GB]", flush=True)
+                        return
+                except Exception:
+                    pass
                 if not _model_lock.acquire(blocking=False):
                     return
+                _lock_holder[0] = "bg_trace"
                 if _user_request_pending[0] > 0:
+                    _lock_holder[0] = "none"
                     _model_lock.release()
                     return
                 try:
+                    mx.clear_cache()  # free gen buffers before trace HVP
                     _tr = compute_trace_for_model(_m, _ids)
                     with _pending_trace_lock:
                         _pending_trace[0]      = _tr
@@ -5642,6 +5940,14 @@ plt.tight_layout()
                 except Exception as _bg_err:
                     print(f"[BG_TRACE] error: {_bg_err}", file=sys.stderr, flush=True)
                 finally:
+                    try:
+                        import gc as _gc_mod
+                        _gc_mod.collect()
+                        mx.synchronize()
+                        mx.clear_cache()  # free trace buffers
+                    except Exception:
+                        pass
+                    _lock_holder[0] = "none"
                     _model_lock.release()
             threading.Thread(target=_bg_trace, daemon=True).start()
 
@@ -5830,18 +6136,29 @@ plt.tight_layout()
                 pass
         # Run online learning in background — don't block the response path.
         # Uses non-blocking acquire so it skips if the next generation already started.
-        _learn_ids_copy = out_ids[-min(128, len(out_ids)):].copy()   # tail = response tokens, not context prefix
+        # Skip entirely for 12B — forward+backward doubles memory, OOMs on 16GB
+        _learn_ids_copy = out_ids[-min(64, len(out_ids)):].copy()   # tail = response tokens; 64 for 12B memory headroom
         def _bg_learn(_m=model_active, _opt=opt_active, _ids=_learn_ids_copy):
             time.sleep(1.5)  # yield to pending user requests first
             if _user_request_pending[0] > 0:
                 return  # user request queued — skip learn step to avoid blocking
+            # Memory gate — skip learn if GPU memory is already tight (12B + KV cache)
+            try:
+                if mx.get_active_memory() > 8 * 1024**3:
+                    print("  [learn skipped: active memory > 8GB]", flush=True)
+                    return
+            except Exception:
+                pass
             if not _model_lock.acquire(blocking=False):
                 return  # next generation is running — skip this learn step
+            _lock_holder[0] = "bg_learn"
             if _user_request_pending[0] > 0:
+                _lock_holder[0] = "none"
                 _model_lock.release()
                 return
             try:
-                _learn_ids_mx = mx.array(_ids, dtype=mx.int32)
+                mx.clear_cache()  # free gen/trace buffers before forward+backward
+                _learn_ids_mx = mx.array(_ids[-64:], dtype=mx.int32)  # smaller window for 12B memory headroom
 
                 def _ol_loss_fn(mdl, ids_mx):
                     inp = ids_mx[None, :-1]
@@ -5879,6 +6196,14 @@ plt.tight_layout()
             except Exception as _le:
                 print(f"  [learn step skipped: {_le}]")
             finally:
+                try:
+                    import gc as _gc_mod
+                    _gc_mod.collect()
+                    mx.synchronize()
+                    mx.clear_cache()  # free grad buffers after learn
+                except Exception:
+                    pass
+                _lock_holder[0] = "none"
                 _model_lock.release()
         threading.Thread(target=_bg_learn, daemon=True).start()
 
@@ -5908,11 +6233,48 @@ plt.tight_layout()
     bar   = "█" * min(max(int(abs(trace) / 100), 1), 30) if _trace_valid(trace) else "·"
     ti    = "📉" if trend_name == "declining" else "📈" if trend_name == "rising" else "➡️"
 
+    # ── Consumer-friendly summary (right column) ─────────────
+    _cf_mode = "Building" if mode == "lora" else "Challenging"
+    _cf_trace_desc = ""
+    if _trace_valid(trace):
+        if trace < 50:
+            _cf_trace_desc = "Low complexity — routine territory"
+        elif trace < 150:
+            _cf_trace_desc = "Moderate complexity — steady engagement"
+        elif trace < 300:
+            _cf_trace_desc = "High complexity — deep thinking"
+        else:
+            _cf_trace_desc = "Very high complexity — pushing boundaries"
+    _cf_trend = {"rising": "Complexity rising", "declining": "Complexity settling", "stable": "Holding steady"}.get(trend_name, "Measuring")
+    _cf_drift_desc = "On topic" if _drift < 0.3 else "Drifting slightly" if _drift < 0.55 else "Exploring new territory"
+    _cf_nov = "Repetitive phrasing" if _nov_score < 0.35 else "Varied vocabulary" if _nov_score > 0.6 else "Normal phrasing"
+    _cf_mood = "Neutral"
+    if _mood_result and _mood_result.get("mood", "neutral") != "neutral":
+        _cf_mood = _mood_result['mood'].capitalize()
+        if _mood_result.get("secondary"):
+            _cf_mood += f", {_mood_result['secondary']}"
+    _cf_flattery = "Elevated — grain of salt" if _flattery_score > 0.6 else "Normal" if _flattery_score > 0 else ""
+    _cf_speed = f"{gen_time:.1f}s" if gen_time < 5 else f"{gen_time:.0f}s"
+    _cf_lines = [
+        f"<b style='color:var(--text2,#ccc)'>{_cf_mode}</b> · turn {turn_count[0]} · {_cf_speed}",
+        _cf_trace_desc,
+        _cf_trend,
+        _cf_drift_desc,
+        _cf_nov,
+        f"Mood: {_cf_mood}",
+    ]
+    if _cf_flattery:
+        _cf_lines.append(f"Flattery: {_cf_flattery}")
+    _consumer_html = "<br>".join(_cf_lines)
+
     medulla = (
         f"\n\n<div style='margin-top:12px; border-left:3px solid "
         f'{"#4CAF50" if mode=="lora" else "#F44336"};'
-        f" padding:8px 12px; font-family:monospace; font-size:0.78em;"
-        f" background:rgba(255,255,255,0.03); color:#9e9e9e; border-radius:4px;'>"
+        f" padding:8px 12px; font-size:0.78em;"
+        f" background:rgba(255,255,255,0.03); color:#9e9e9e; border-radius:4px;"
+        f" display:flex; gap:24px;'>"
+        # Left column — technical diagnostics
+        f"<div style='flex:1;min-width:0;font-family:monospace'>"
         f"<b>{icon} MEDULLA</b> t{turn_count[0]} — "
         f"{gen_time:.1f}s gen / {trace_time:.1f}s trace / {elapsed:.1f}s total<br>"
         f"<b>MODEL</b>: {model_label} ({'large-only' if pair.small is None and pair.mode == 'mixed' else pair.mode})"
@@ -5951,7 +6313,14 @@ plt.tight_layout()
            if _mood_result else "")
         + (f"<br><b>OCEAN</b>: {_ocean_user.context_string()}"
            if _ocean_user.context_string() else "")
+        + f"</div>"  # end left column
+        # Right column — consumer-friendly summary
+        + f"<div style='flex:0 0 200px;font-family:var(--font,sans-serif);"
+        f"color:var(--text3,#aaa);font-size:1em;line-height:1.7;"
+        f"border-left:1px solid rgba(255,255,255,0.06);padding-left:16px'>"
+        + _consumer_html
         + f"</div>"
+        + f"</div>"  # end flex container
     )
 
     # ── Response diversity check (before log so _resp_sim is defined) ──
@@ -6090,21 +6459,10 @@ plt.tight_layout()
           f"gen {gen_time:.1f}s | hess {trace_time:.1f}s | drift {_drift:.2f}"
           + (" | 🌐" if searched else "") + term_flag)
 
-    # Drift badge — subtle inline marker when response drifts from user register
-    # Skip on short responses — not enough text for meaningful drift measurement
+    # Drift badge — removed from chat messages; drift is already shown in medulla block.
+    # Keeps chat clean and reduces HTML bloat in history.
     _resp_len = len(response.split())
-    if _resp_len < 30:
-        drift_badge = ""
-    elif _drift >= 0.5:
-        drift_badge = (f" <span style='font-size:.72em;color:#ff9800;"
-                       f"border:1px solid rgba(255,152,0,.45);border-radius:3px;"
-                       f"padding:1px 5px'>⚡ drift {_drift:.2f}</span>")
-    elif _drift >= 0.35:
-        drift_badge = (f" <span style='font-size:.72em;color:#ffd740;"
-                       f"border:1px solid rgba(255,215,64,.35);border-radius:3px;"
-                       f"padding:1px 5px'>↗ {_drift:.2f}</span>")
-    else:
-        drift_badge = ""
+    drift_badge = ""
 
     # Provisional badge (Move 3) — visible failure marking
     _provisional_badge = ""
@@ -6287,6 +6645,7 @@ _session_lock = threading.Lock()  # guards clear+extend sequences against _strea
 _session_epoch = [0]  # incremented on /api/new so background tasks can detect stale sessions
 _user_request_pending = [0]  # >0 = a generation request is queued for _model_lock; bg tasks must yield
 _active_session_ts = [None]  # stable ID for current session file (set on first save, cleared on /new)
+_boot_greeted = [False]      # True once /api/greet has fired this boot — prevents re-greeting on browser reopen
 
 def _format_session_date(ts_id: str) -> str:
     """Format ts_id '2026-04-15_HH-MM-SS' as 'Apr 15, 2026' or 'Apr 15, 2026 · 2:30pm'."""
@@ -6618,6 +6977,134 @@ async def index_page():
 async def api_health():
     return JSONResponse({"status": "ok", "model": MODEL})
 
+@api.get("/api/sleep")
+async def api_sleep_status():
+    return JSONResponse({
+        "state":       _sleep.state,
+        "idle_seconds": round(_sleep.idle_seconds, 1),
+        "dream":       _sleep.dream,
+        "digest":      _sleep.digest[:200] if _sleep.digest else "",
+        "consolidations": _sleep._consolidation_count,
+        "timeout":     _sleep.idle_timeout,
+        "can_wake":    _sleep.can_wake,
+        "sleep_remaining": round(_sleep.sleep_remaining, 0),
+    })
+
+@api.post("/api/activity")
+async def api_activity_ping():
+    """Mouse/keyboard activity ping — resets idle timer without waking from sleep."""
+    _sleep.ping()
+    return JSONResponse({"ok": True})
+
+@api.post("/api/sleep/trigger")
+async def api_sleep_trigger():
+    """Manual sleep trigger — user clicked the sleep button."""
+    _sleep.trigger_sleep()
+    return JSONResponse({"ok": True, "state": _sleep.state})
+
+@api.post("/api/wake")
+async def api_wake():
+    """Wake from sleep — triggered by keypress in overlay."""
+    _sleep.on_activity()
+    return JSONResponse({
+        "ok": True,
+        "state": _sleep.state,
+        "dream": _sleep.dream,
+        "digest": _sleep.digest[:200] if _sleep.digest else "",
+        "jostled": _sleep.jostled,
+    })
+
+@api.post("/api/mark-awake")
+async def api_mark_awake(request: Request):
+    """Finalize wake — clears dream text, optionally injects dream message into session."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    dream_msg = (data.get("dream_msg") or "").strip()
+    if dream_msg:
+        with _session_lock:
+            _session_history.append({"role": "assistant", "content": dream_msg})
+    _sleep.mark_awake()
+    return JSONResponse({"ok": True})
+
+
+def _generate_greeting() -> str:
+    """Generate a short contextual greeting as if the model just woke up.
+    Returns greeting text, or empty string on failure / lock contention.
+    The hidden prompt never enters _session_history — only the response does.
+    """
+    # Skip if a user request is pending — don't make them wait
+    if _user_request_pending[0] > 0:
+        return ""
+    # Extract last topic from session history
+    with _session_lock:
+        _recent = list(_session_history[-6:])  # last 3 exchanges max
+    _topic_parts = []
+    for _m in _recent:
+        if _m.get("role") == "user":
+            _c = str(_m.get("content", "") or "").strip()
+            if _c and not _c.startswith("/"):
+                _topic_parts.append(_c[:120])
+    _topic = _topic_parts[-1] if _topic_parts else ""
+    # Build elapsed context
+    _elapsed, _ = get_boot_context()
+    _an = _assistant_name[0] or "Graceful"
+    _un = _user_name[0] or "them"
+    # Hidden prompt — exists only in local variables, never persisted
+    _greet_msgs = [
+        {"role": "system", "content": (
+            f"You are {_an}. You just woke up after being asleep"
+            + (f" for {_elapsed}" if _elapsed and _elapsed != "just now" else "")
+            + ". Greet the user naturally in 1-2 short sentences, like you're still coming to. "
+            + "Be warm but brief — no questions, no lists. "
+            + ("Reference what you were last discussing: " + _topic if _topic else "")
+        )},
+        {"role": "user", "content": "(waking up)"},
+    ]
+    if not _model_lock.acquire(timeout=8):
+        return ""
+    _lock_holder[0] = "greet"
+    try:
+        # Re-check after acquiring lock
+        if _user_request_pending[0] > 0:
+            return ""
+        with _tokenizer_lock:
+            _tok_inner = tok.tokenizer if hasattr(tok, 'tokenizer') else tok
+            _prompt = _tok_inner.apply_chat_template(
+                _greet_msgs, tokenize=False, add_generation_prompt=True
+            )
+        result = _mlx_generate(model, tok, _prompt, max_tokens=80, verbose=False)
+        _text = (result.text if hasattr(result, 'text') else str(result)).strip()
+        # Strip any role markers the model may have prepended
+        for _prefix in ("model\n", "assistant\n"):
+            if _text.lower().startswith(_prefix):
+                _text = _text[len(_prefix):].strip()
+        return _text
+    except Exception as _e:
+        print(f"  [greet generation failed: {_e}]", flush=True)
+        return ""
+    finally:
+        _lock_holder[0] = "none"
+        _model_lock.release()
+
+
+@api.post("/api/greet")
+async def api_greet():
+    """Generate a contextual wake greeting. The hidden prompt never enters session history."""
+    import asyncio
+    greeting = await asyncio.to_thread(_generate_greeting)
+    if greeting:
+        _boot_greeted[0] = True
+        # Inject as unprompted assistant message — no paired user message
+        with _session_lock:
+            _session_history.append({"role": "assistant", "content": greeting})
+        # Persist so the greeting survives a browser refresh
+        _save_sid = _active_session_ts[0]
+        _save_hist = list(_session_history)
+        threading.Thread(target=_save_session, kwargs={"sid": _save_sid, "hist": _save_hist}, daemon=True).start()
+    return JSONResponse({"greeting": greeting})
+
 
 @api.get("/api/init")
 async def api_init():
@@ -6646,8 +7133,12 @@ async def api_init():
         "active_sid":       active_sid,
         "vision_tokens":    _VISION_TOKENS,
         "session_restored": bool(_today_sid and _has_hist),
+        "needs_greeting":   bool(_today_sid and _has_hist and not _boot_greeted[0]),
         "proactive_enabled": _proactive.enabled,
         "proactive_pending": len(_proactive.get_pending()),
+        "sleep_state":      _sleep.state,
+        "user_age":         _user_age[0],
+        "sleep_timeout":    _sleep.idle_timeout,
     })
 
 @api.post("/api/chat")
@@ -7447,6 +7938,14 @@ async def api_settings(request: Request):
         _user_name[0] = (data["user_name"] or "").strip()
     if "assistant_name" in data:
         _assistant_name[0] = (data["assistant_name"] or "Graceful").strip()
+    if "user_age" in data:
+        _user_age[0] = str(data["user_age"]).strip()
+    if "sleep_timeout" in data:
+        try:
+            _st = float(data["sleep_timeout"])
+            _sleep.set_timeout(_st)
+        except (ValueError, TypeError):
+            pass
     if "system_prompt" in data:
         _sp = (data["system_prompt"] or "").strip()
         system_prompt[0] = _sp if _sp else _DEFAULT_SYSTEM_PROMPT
@@ -7483,14 +7982,23 @@ async def api_settings(request: Request):
         except Exception:
             pass
         # Also persist assistant_name to config.json
-        if "assistant_name" in data or "user_name" in data:
+        if "assistant_name" in data or "user_name" in data or "user_age" in data:
             try:
                 config = _load_user_config()
                 config["assistant_name"] = _assistant_name[0]
                 config["user_name"] = _user_name[0]
+                config["user_age"] = _user_age[0]
                 _save_user_config(config)
             except Exception:
                 pass
+    # Persist sleep_timeout to config.json
+    if "sleep_timeout" in data:
+        try:
+            config = _load_user_config()
+            config["sleep_timeout"] = _sleep.idle_timeout
+            _save_user_config(config)
+        except Exception:
+            pass
     return JSONResponse({"ok": True})
 
 @api.get("/api/threshold_history")
@@ -7689,7 +8197,8 @@ async def api_finetune(request: Request):
 
         for i, chunk in enumerate(chunks[:steps_done]):
             try:
-                _enc_ids = tok.tokenizer.encode(chunk["text"]) if hasattr(tok, 'tokenizer') else tok.encode(chunk["text"])
+                with _tokenizer_lock:
+                    _enc_ids = tok.tokenizer.encode(chunk["text"]) if hasattr(tok, 'tokenizer') else tok.encode(chunk["text"])
                 ids_mx = mx.array(_enc_ids[:MAX_CTX], dtype=mx.int32)
                 if len(ids_mx) < 4:
                     asyncio.run_coroutine_threadsafe(
@@ -7756,6 +8265,34 @@ async def api_insights():
         dance = compute_dance_coherence(_ocean_user, _ocean_model)
     except Exception:
         dance = {"coherence": 0, "dimensions": {}}
+    # Model behavior signals — trace history, drift, SnobLine, coupled trace
+    _trace_tail = trace_history_live[-50:] if trace_history_live else []
+    _snob_state = {
+        "mode": ctrl.mode,
+        "consec_patho": ctrl.consec_patho,
+        "anti_count": ctrl.anti_count,
+        "switches": len(ctrl.log),
+        "switch_log": ctrl.log[-10:] if ctrl.log else [],
+        "session_anchor": ctrl.session_anchor,
+        "model_low": ctrl.model_low,
+        "model_high": ctrl.model_high,
+        "consec_flattery": ctrl.consec_flattery,
+    }
+    _last_flattery = session_log[-1].get("flattery_score", 0.0) if session_log else 0.0
+    _last_drift = trace_history_live[-1].get("drift", 0) if trace_history_live else 0
+    _fw_conf_data = None
+    if _last_fw_conf[0] is not None:
+        try:
+            _fw_conf_data = {
+                "overall": _last_fw_conf[0].get("overall", 0),
+                "components": _last_fw_conf[0].get("components", {}),
+            }
+        except Exception:
+            pass
+    _coupled = {
+        "nudge": _last_coupled_detail[0],
+        "detail": _last_coupled_detail[1],
+    }
     return JSONResponse({
         "ocean_user": _ocean_user.to_summary(),
         "ocean_model": _ocean_model.to_summary(),
@@ -7763,6 +8300,14 @@ async def api_insights():
         "mood": _mood_tracker.session_summary(),
         "confidence": _confidence_tracker.get_summary(),
         "human_profile": _human_profile.get_profile_summary(),
+        "trace_history": _trace_tail,
+        "snobline": _snob_state,
+        "flattery_score": round(_last_flattery, 3),
+        "drift": round(_last_drift, 3),
+        "framework_confidence": _fw_conf_data,
+        "coupled_trace": _coupled,
+        "turn_count": turn_count[0],
+        "sampling": {"temp": _last_sampling[0], "top_p": _last_sampling[1]},
     })
 
 @api.post("/api/system_profile/reset")
@@ -7784,7 +8329,8 @@ async def api_reinforce(request: Request):
             return
         scale = 1.0 if positive else -0.4
         try:
-            _enc_ids = tok.tokenizer.encode(resp) if hasattr(tok, 'tokenizer') else tok.encode(resp)
+            with _tokenizer_lock:
+                _enc_ids = tok.tokenizer.encode(resp) if hasattr(tok, 'tokenizer') else tok.encode(resp)
             ids_mx = mx.array(_enc_ids[:MAX_CTX], dtype=mx.int32)
             if len(ids_mx) < 4:
                 return

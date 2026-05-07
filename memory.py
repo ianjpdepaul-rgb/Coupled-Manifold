@@ -414,6 +414,26 @@ _CONCEPT_STOPWORDS = frozenset({
     "repeat", "scroll", "shadow", "source", "weight", "letter", "spacing",
     # Framework artifacts
     "response", "confidence", "threshold", "coupled",
+    # Filler / grammatical words 5+ letters that leak through the regex
+    "ability", "actually", "already", "another", "anything", "around",
+    "become", "before", "behind", "between", "beyond", "called",
+    "cannot", "comes", "could", "different", "doesn", "doesnt",
+    "enough", "especially", "everything", "figure", "forward",
+    "generally", "getting", "given", "going", "having", "itself",
+    "least", "likely", "looking", "makes", "maybe", "might",
+    "mostly", "necessary", "needed", "nothing", "often", "other",
+    "otherwise", "perhaps", "picked", "picking", "pretty", "probably",
+    "quite", "rather", "really", "recent", "recently", "require",
+    "required", "seems", "should", "simply", "since", "sometimes",
+    "something", "still", "stuff", "suggest", "suggested", "their",
+    "there", "these", "thing", "things", "think", "those", "three",
+    "through", "using", "usually", "whatever", "where", "which",
+    "while", "whole", "within", "without", "would", "yourself",
+    "genuinely", "heavily", "focused", "detailed", "compared",
+    "sufficient", "significant", "previously", "immediately",
+    "information", "basically", "absolutely", "apparently",
+    # Typos
+    "ameter", "abiloty",
 })
 
 
@@ -516,7 +536,7 @@ class IdentityModel:
                 self._st_enc = _ST("all-MiniLM-L6-v2", device="cpu")
             _words = list(set(_re.findall(r'\b[A-Za-z][a-z]{4,}\b', turn_text)))
             _existing = list(self.data["concepts"])[-8:]
-            if _existing and len(self.data["concepts"]) < 150:
+            if _existing:
                 _ex_vecs = self._st_enc.encode(_existing, show_progress_bar=False)
                 for _w in _words[:20]:
                     _wl = _w.lower()

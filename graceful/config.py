@@ -13,7 +13,7 @@ HUTCH_N     = 1
 MAX_CTX     = 2048   # tokens for online-learning backprop
 TRACE_CTX   = 32     # Hessian trace window
 TRACE_LAYERS = 8     # adapter layers to subsample per trace call
-MAX_NEW     = 1024   # max generated tokens
+MAX_NEW     = 2048   # max generated tokens — 1024 was truncating mid-sentence
 LR          = 1e-5
 GRAD_ACCUM  = 4      # gradient accumulation steps
 _VISION_TOKENS = 256 # Gemma 3 vision default (256 tokens/image)
@@ -24,7 +24,7 @@ _KEYS_PATH  = f"{DATA_DIR}/keys.json"
 _SETTINGS_PATH = f"{DATA_DIR}/user_settings.json"
 
 # ── Limits ───────────────────────────────────────────────────────
-MAX_PROMPT_CHARS = 8000
+MAX_PROMPT_CHARS = 2500   # tight for 12B on 16GB — prevents OOM on prefill
 DEV              = "mlx"
 CONSEC_PATHO_LIMIT = 3
 TREND_WINDOW       = 5

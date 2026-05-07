@@ -87,6 +87,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #trace-pill{font-size:.58em;color:var(--text4);font-family:var(--mono);max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
 #medulla-bar{display:none;font-size:.62em;color:var(--text3);font-family:var(--mono);padding:6px 22px 10px;background:rgba(0,0,0,.32);border-bottom:1px solid var(--border2);flex-shrink:0;line-height:1.72;overflow-y:auto;max-height:220px}
 #medulla-bar.on{display:block}
+#behavior-bar{display:none;font-size:.75em;color:var(--text3);font-family:var(--font);padding:10px 22px 14px;background:rgba(0,0,0,.28);border-bottom:1px solid var(--border2);flex-shrink:1;overflow-y:auto;max-height:38vh;min-height:0}
+#behavior-bar.on{display:block}
 #activity-bar{height:5px;background:rgba(255,255,255,.07);flex-shrink:0;cursor:pointer;position:relative;overflow:hidden;transition:background .6s ease;}
 #activity-bar.gen{background:rgba(0,0,0,.4)!important;transition:none!important;}
 #activity-bar.gen::after{content:"";position:absolute;top:0;left:-70%;width:55%;height:100%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.92) 50%,transparent);animation:abar-scan 1.2s ease-in-out infinite;}
@@ -379,6 +381,7 @@ body,#sidebar,#topbar,#medulla-bar{transition:opacity .3s,transform .3s;}
 body.focus-mode #sidebar{display:none!important;}
 body.focus-mode #topbar{opacity:0;pointer-events:none;}
 body.focus-mode #medulla-bar{display:none!important;}
+body.focus-mode #behavior-bar{display:none!important;}
 body.focus-mode #stop-in-focus{display:block!important;}
 #focus-exit-btn{display:none;position:fixed;top:10px;right:14px;z-index:99999;background:rgba(30,30,30,.92);border:1px solid var(--border2);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:.75em;color:var(--text2);font-family:var(--font);transition:all .15s;backdrop-filter:blur(4px);}
 #focus-exit-btn:hover{color:var(--text);background:rgba(40,40,40,.98);}
@@ -394,7 +397,7 @@ body.focus-mode #focus-exit-btn{display:block;}
 
 /* ── Feature 8: Print CSS ── */
 @media print{
-  #topbar,#sidebar,#input-wrap,#input-area,#medulla-bar,#scroll-btn{display:none!important;}
+  #topbar,#sidebar,#input-wrap,#input-area,#medulla-bar,#behavior-bar,#scroll-btn{display:none!important;}
   body,#main,#chat-wrap,#messages{background:white!important;color:black!important;}
   .bubble{background:#f5f5f5!important;color:black!important;border:1px solid #ccc!important;}
   .msg-row.user .bubble{background:#ffe0eb!important;}
@@ -541,6 +544,61 @@ body.reduce-motion *{animation:none!important;transition:none!important;}
 .sp-blink  { animation: spblink 1.4s ease-in-out infinite; }
 @keyframes spblink { 0%,100%{opacity:1} 50%{opacity:.4} }
 
+/* ── Sleep overlay ── */
+#sleep-overlay {
+  position:fixed;top:0;left:0;right:0;bottom:0;z-index:9000;
+  background:rgba(15,15,15,.75);backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;
+  opacity:0;pointer-events:none;transition:opacity 1.2s ease;
+}
+#sleep-overlay.active { opacity:1;pointer-events:auto; }
+#sleep-overlay.drowsy { opacity:1;pointer-events:auto;background:rgba(15,15,15,.35);backdrop-filter:blur(1px);animation:drowsy-pulse 3s ease-in-out infinite; }
+#sleep-overlay.waking { pointer-events:none; }
+@keyframes drowsy-pulse { 0%,100%{background:rgba(15,15,15,.2)} 50%{background:rgba(15,15,15,.45)} }
+#sleep-box {
+  background:var(--bg2,#191919);border:1px solid var(--border,#333);
+  border-radius:16px;padding:28px 40px;text-align:center;
+  box-shadow:0 8px 32px rgba(0,0,0,.4);max-width:320px;
+}
+#sleep-box .sleep-icon { font-size:2em;margin-bottom:8px;animation:breathe 3s ease-in-out infinite; }
+#sleep-box .sleep-text { font-size:.85em;color:var(--text2,#ababab);margin-bottom:6px; }
+#sleep-box .sleep-dream { font-size:.72em;color:var(--text3,#686868);font-style:italic;margin-top:8px;line-height:1.4; }
+#sleep-box .sleep-dots span {
+  display:inline-block;width:5px;height:5px;border-radius:50%;
+  background:var(--text3);margin:0 2px;animation:dotpulse 2s ease-in-out infinite;
+}
+#sleep-box .sleep-dots span:nth-child(2){animation-delay:.4s}
+#sleep-box .sleep-dots span:nth-child(3){animation-delay:.8s}
+
+/* ── Setup modal (first run) ── */
+#setup-overlay {
+  position:fixed;top:0;left:0;right:0;bottom:0;z-index:9500;
+  background:rgba(15,15,15,.85);backdrop-filter:blur(4px);
+  display:flex;align-items:center;justify-content:center;
+}
+#setup-overlay.hidden { display:none; }
+#setup-box {
+  background:var(--bg2,#191919);border:1px solid var(--border,#333);
+  border-radius:16px;padding:32px 36px;text-align:center;
+  box-shadow:0 8px 32px rgba(0,0,0,.5);max-width:300px;width:90%;
+}
+#setup-box h3 { margin:0 0 4px; font-size:1em; color:var(--text1,#eee); font-weight:500; }
+#setup-box .setup-sub { font-size:.72em; color:var(--text3,#686868); margin-bottom:16px; }
+#setup-box input {
+  display:block;width:100%;box-sizing:border-box;
+  background:var(--bg,#111);border:1px solid var(--border2,#2a2a2a);
+  border-radius:8px;padding:8px 12px;color:var(--text1,#eee);
+  font-size:.85em;margin-bottom:10px;outline:none;
+}
+#setup-box input:focus { border-color:var(--primary,#6ee7b7); }
+#setup-box button {
+  background:var(--primary-dim,rgba(110,231,183,.12));
+  border:1px solid var(--primary-border,rgba(110,231,183,.3));
+  color:var(--primary,#6ee7b7);border-radius:8px;padding:8px 24px;
+  cursor:pointer;font-size:.82em;margin-top:4px;transition:all .15s;
+}
+#setup-box button:hover { background:rgba(110,231,183,.2); }
+
 /* ── Reaction buttons ── */
 .msg-reactions { display:flex; gap:4px; margin-top:4px; opacity:0; transition:opacity .2s; }
 .msg-row:hover .msg-reactions { opacity:1; }
@@ -562,6 +620,7 @@ body,#messages{background:var(--bg)!important;}
 #input-box{background:var(--bg3)!important;border-color:var(--border2)!important;}
 #sb-bot,#notes-panel{border-top-color:var(--border)!important;}
 #medulla-bar{background:var(--bg-overlay)!important;border-bottom-color:var(--border2)!important;}
+#behavior-bar{background:var(--bg-overlay)!important;border-bottom-color:var(--border2)!important;}
 #send-btn{background:linear-gradient(135deg,var(--primary),var(--primary2))!important;color:#fff!important;}
 #send-btn:hover:not(.gen):not(:disabled){filter:brightness(1.1);}
 .msg-row.user .bubble{background:linear-gradient(135deg,var(--user-bubble) 0%,var(--user-bubble2) 100%)!important;box-shadow:0 2px 12px var(--user-shadow)!important;}
@@ -582,6 +641,24 @@ input[type=range]{accent-color:var(--primary)!important;}
 </style>
 </head>
 <body>
+<div id="sleep-overlay">
+  <div id="sleep-box">
+    <div class="sleep-icon">&#x1F31C;</div>
+    <div class="sleep-dots"><span></span><span></span><span></span></div>
+    <div class="sleep-dream" id="sleep-dream-text" style="display:none"></div>
+    <div class="sleep-wake-hint" id="sleep-wake-hint" style="font-size:.62em;color:var(--text3,#555);margin-top:12px;letter-spacing:.5px"></div>
+  </div>
+</div>
+<div id="setup-overlay" class="hidden">
+  <div id="setup-box">
+    <h3>hey</h3>
+    <div class="setup-sub">local model, no cloud — just need a couple things</div>
+    <input id="setup-name" placeholder="your name" autofocus>
+    <input id="setup-age" type="number" placeholder="age" min="5" max="120" style="width:80px;display:inline-block">
+    <div style="font-size:.58em;color:var(--text3);margin:-4px 0 12px;text-align:left">for humor calibration, nothing weird</div>
+    <button id="setup-go">let's go</button>
+  </div>
+</div>
 <div id="app">
 <aside id="sidebar">
   <div id="sb-top">
@@ -600,18 +677,20 @@ input[type=range]{accent-color:var(--primary)!important;}
   </div>
   <div id="sb-bot">
     <button class="sb-btn" id="settings-btn">&#9881; Settings</button>
+    <button class="sb-btn" id="behavior-btn">&#9673; Behavior</button>
     <button class="sb-btn" id="medulla-btn">&#9672; Trace</button>
     <button class="sb-btn" id="analytics-btn">&#x1F4CA; Stats</button>
     <div id="analytics-panel" style="display:none">
       <div id="analytics-content" style="font-size:.75em;color:var(--text3);padding:8px 0;line-height:1.8"></div>
     </div>
     <button class="sb-btn" id="export-all-btn" title="Download all sessions as one markdown file">&#8595; Export All</button>
-    <button class="sb-btn" id="shutdown-btn" title="Save and shut down the server" style="color:#f47174;margin-top:8px">&#9211; Shut Down</button>
+    <button class="sb-btn" id="sleep-btn" title="Put the model to sleep — consolidates memories" style="color:var(--text3);margin-top:8px">&#x1F31C; Sleep</button>
   </div>
 </aside>
 <div id="mob-backdrop"></div>
 <main id="main">
   <div id="medulla-bar"></div>
+  <div id="behavior-bar"></div>
   <div id="offline-banner">You are offline. Messages may not send.</div>
   <div id="topbar">
     <button id="sb-tog">&#9776;</button>
@@ -643,7 +722,7 @@ input[type=range]{accent-color:var(--primary)!important;}
   <div id="pin-strip" style="display:none"></div>
   <div id="messages" style="position:relative">
     <div class="col" id="msg-wrap">
-      <div id="load-older-btn" style="display:none !important">↑ load older</div>
+      <div id="load-older-btn" style="display:none;text-align:center;padding:8px;opacity:0.5;cursor:pointer;font-size:13px">↑ load older</div>
       <div id="empty">
         <div id="empty-title">manifold</div>
         <p>local model &middot; memory &middot; search<br>/ for commands &middot; &#8984;K for palette</p>
@@ -699,6 +778,8 @@ input[type=range]{accent-color:var(--primary)!important;}
         <input class="s-inp" id="assistant-name" placeholder="Graceful" style="margin-bottom:8px">
         <div class="s-sub" style="margin-bottom:4px">Your name</div>
         <input class="s-inp" id="user-name" placeholder="What should it call you?" style="margin-bottom:8px">
+        <div class="s-sub" style="margin-bottom:4px">Your age</div>
+        <input class="s-inp" id="user-age" type="number" placeholder="age" min="5" max="120" style="margin-bottom:8px;width:80px">
         <span id="name-saved" style="font-size:.68em;color:#4ade80;opacity:0;transition:opacity .25s;font-weight:400"></span>
       </div>
     </div>
@@ -749,6 +830,12 @@ input[type=range]{accent-color:var(--primary)!important;}
       <div class="s-lbl">Proactive Messaging</div>
       <div class="s-sub">unprompted check-ins, reminders, and nudges</div>
       <button class="s-btn" id="proactive-toggle-btn" style="min-width:60px">On</button>
+    </div>
+    <div class="s-sec">
+      <div class="s-lbl">Nap Timer</div>
+      <div class="s-sub">how long before it falls asleep — 2 min recommended, it likes to nap</div>
+      <input type="range" id="sleep-timeout-sl" min="120" max="420" step="30" value="120">
+      <div id="sleep-timeout-disp" style="font-size:.7em;color:var(--text3);font-family:var(--mono);margin-top:3px">2:00 — recommended</div>
     </div>
     <div class="s-sec">
       <div class="s-lbl">Memory Status</div>
@@ -1193,7 +1280,7 @@ var CMDS=[
   {cmd:"/forget ",    desc:"Remove a fact from identity",                  icon:"&#x1F5D1;",group:"Memory"   },
   {cmd:"/remember ",  desc:"Store a persistent note",                      icon:"&#x1F4CC;",group:"Memory"   },
   {cmd:"/recall ",    desc:"Retrieve a stored note",                       icon:"&#x1F4AD;",group:"Memory"   },
-  {cmd:"/knowledge",  desc:"Borgesian Map — knowledge graph summary",       icon:"&#x1F578;",group:"Memory"   },
+  /* /knowledge removed — map is visual only (◉ Map button), model already knows this */
   /* ── Session ─────────────────────────────────────────── */
   {cmd:"/export",     desc:"Export session as markdown",                   icon:"&#x1F4E4;",group:"Session"  },
   {cmd:"/save ",      desc:"Snapshot session with label",                  icon:"&#x1F4BE;",group:"Session"  },
@@ -1527,6 +1614,7 @@ function buildRow(role,content,idx){
   return row;
 }
 var _histLoadOffset=0,_histHasMore=false,_histLoading=false;
+var _RENDER_TAIL=40; // only render last N messages initially; scroll up loads more
 function renderHistory(){
   var w=getMW();
   // Remove all message rows AND any stale streaming/typing rows
@@ -1537,13 +1625,20 @@ function renderHistory(){
   document.getElementById("resume-btn-wrap")&&(document.getElementById("resume-btn-wrap").style.display="none");
   _renderingHistory=true;
   _msgTimestamps={};  // clear stale timestamps from previous session
-  history.forEach(function(m,i){w.appendChild(buildRow(m.role,m.content,i));});
+  // For long chats, only render the tail — older messages load on scroll-up
+  var startIdx=Math.max(0,history.length-_RENDER_TAIL);
+  if(startIdx>0){
+    _histHasMore=true;
+    _histLoadOffset=startIdx;
+  }
+  for(var i=startIdx;i<history.length;i++){w.appendChild(buildRow(history[i].role,history[i].content,i));}
   _renderingHistory=false;
   // Re-render math after all rows are in the DOM, then re-scroll so KaTeX height is included
   setTimeout(function(){w.querySelectorAll(".msg-row.assistant .bubble").forEach(function(b){renderMath(b);});scrollBot(true);},0);
   scrollBot(true);
   // After rendering, check if there are older messages to load
-  _checkHistoryMore();
+  if(!_histHasMore)_checkHistoryMore();
+  _updateLoadMoreBtn();
   _updateRegenVisibility();
 }
 async function _checkHistoryMore(){
@@ -1556,7 +1651,7 @@ async function _checkHistoryMore(){
 }
 function _updateLoadMoreBtn(){
   var btn=document.getElementById("load-older-btn");
-  if(btn)btn.style.display="none";
+  if(btn)btn.style.display=_histHasMore?"":"none";
 }
 async function loadOlderMessages(){
   if(_histLoading||!_histHasMore)return;
@@ -1748,6 +1843,8 @@ function setGen(v){
     if(ap&&ap.style.display!=="none"&&window._refreshAnalytics)window._refreshAnalytics();
     // Auto-refresh Borgesian Map if open — watch the brain grow
     if(window._refreshKnowledgeGraph)window._refreshKnowledgeGraph();
+    // Auto-refresh Behavior bar if open
+    _refreshBehaviorBar();
   }
 }
 function scrollBot(force){var m=document.getElementById("messages");if(force||!_userScrolled)m.scrollTop=m.scrollHeight;}
@@ -1757,8 +1854,7 @@ document.getElementById("messages").addEventListener("scroll",function(){
   var atBot=this.scrollHeight-this.scrollTop-this.clientHeight<60;
   _userScrolled=!atBot;
   document.getElementById("scroll-btn").classList.toggle("show",!atBot&&this.scrollTop>200);
-  // Load older messages disabled — feature hidden
-  // if(this.scrollTop<80&&_histHasMore&&!_histLoading)loadOlderMessages();
+  if(this.scrollTop<80&&_histHasMore&&!_histLoading)loadOlderMessages();
 });
 document.getElementById("scroll-btn").onclick=function(){_userScrolled=false;scrollBot(true);};
 });
@@ -1789,6 +1885,332 @@ function updateMedulla(status,hist){
     }
   }
   bar.textContent=status;
+}
+// ── Behavior bar — OCEAN + coevo + mood + model signals, auto-refreshes each turn ──
+async function _refreshBehaviorBar(){
+  var bb=document.getElementById("behavior-bar");
+  if(!bb||!bb.classList.contains("on"))return;
+  try{
+    var [r,r2]=await Promise.all([fetch("/api/mem_status"),fetch("/api/insights")]);
+    var d=await r.json(),ins=await r2.json();
+    d.ocean_user=ins.ocean_user;d.ocean_model=ins.ocean_model;
+    d.ocean_dance=ins.ocean_dance;d.mood=ins.mood;
+    var sp=d.system_profile||{};
+    var hp=ins.human_profile||{};
+    var sigs=hp.session_signals||[];
+    var cs=hp.current_state||{};
+    var html='<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">';
+    // ── Behavioral signals chart ──
+    html+='<div style="flex:1;min-width:280px">';
+    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:6px" title="Real-time keystroke and engagement signals captured from your typing patterns each turn">Your Behavioral Signals</div>';
+    html+='<div id="bb-signals" style="height:100px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
+    var modeCols={working:"#9ca3af",exploring:"#60a5fa",debating:"#c084fc",casual:"#4ade80",venting:"#f87171"};
+    html+='<div style="display:flex;gap:10px;margin-top:6px;font-size:.72em;flex-wrap:wrap">';
+    html+='<span style="color:'+(modeCols[cs.mode]||"#888")+'">'+( cs.mode||"\u2014")+'</span>';
+    html+='<span style="color:var(--text4)">valence: '+(cs.valence!=null?cs.valence.toFixed(1):"\u2014")+'</span>';
+    html+='<span style="color:var(--text4)">urgency: '+(cs.urgency!=null?cs.urgency.toFixed(1):"\u2014")+'</span>';
+    html+='<span style="color:var(--text4)">engagement: '+(cs.engagement!=null?cs.engagement.toFixed(1):"\u2014")+'</span>';
+    html+='</div>';
+    var stats=hp;
+    var statParts=[];
+    if(stats.typing_speed)statParts.push('avg speed: '+stats.typing_speed.mean.toFixed(1)+' cps');
+    if(stats.edit_ratio)statParts.push('avg edits: '+(stats.edit_ratio.mean*100).toFixed(0)+'%');
+    if(stats.median_pause_ms)statParts.push('avg pause: '+Math.round(stats.median_pause_ms.mean)+'ms');
+    if(stats.keystroke_count)statParts.push('avg keystrokes: '+Math.round(stats.keystroke_count.mean));
+    if(stats.typing_rhythm_variance)statParts.push('rhythm var: '+Math.round(stats.typing_rhythm_variance.mean));
+    html+='<div style="font-size:.68em;color:var(--text4);margin-top:3px">'+(statParts.length?statParts.join(' \u00b7 '):'No data yet \u2014 keep typing')+'</div>';
+    html+='</div>';
+    // ── OCEAN radars ──
+    html+='<div style="flex:0 0 320px;display:flex;gap:12px">';
+    html+='<div style="flex:1"><div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;text-align:center;cursor:help" title="Big Five personality radar for your messages this session — Openness, Conscientiousness, Extraversion, Agreeableness, Neuroticism">You</div>';
+    html+='<div id="bb-ocean-user" style="height:130px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div></div>';
+    html+='<div style="flex:1"><div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;text-align:center;cursor:help" title="Big Five personality radar for the model\'s responses — mirrors and adapts to your conversational style">Model</div>';
+    html+='<div id="bb-ocean-model" style="height:130px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div></div>';
+    html+='</div>';
+    // ── Mood + dance ──
+    html+='<div style="flex:0 0 180px">';
+    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Dominant emotional tone of the conversation — classified from message sentiment and engagement patterns">Session Mood</div>';
+    html+='<div id="bb-mood" style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 8px"></div>';
+    if(d.ocean_dance){
+      html+='<div style="font-size:.72em;color:var(--text3);margin-top:8px;text-align:center;cursor:help" title="How well the model\'s OCEAN profile mirrors yours — 100% = perfect personality synchronization">Dance coherence: '+(d.ocean_dance.coherence*100).toFixed(0)+'%</div>';
+    }
+    html+='</div>';
+    html+='</div>';
+    // ══════════════════════════════════════════════════════════════════════
+    // MODEL BEHAVIOR — scrollable section below user signals + OCEAN
+    // ══════════════════════════════════════════════════════════════════════
+    var th=ins.trace_history||[];
+    var snob=ins.snobline||{};
+    var fwc=ins.framework_confidence;
+    var coupled=ins.coupled_trace||{};
+    html+='<div style="margin-top:14px;border-top:1px solid var(--border2);padding-top:12px">';
+    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:8px" title="Internal model signals — adapter learning, routing decisions, and drift tracking">Model Behavior</div>';
+    // ── Hessian Trace sparkline ──
+    html+='<div style="margin-bottom:10px">';
+    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="How much the model\'s weights are changing — high values mean it\'s learning something new, low means stable. Green = LoRA adapter, Red = anti-adapter correcting drift.">Hessian Trace (curvature)</div>';
+    html+='<div id="bb-trace-chart" style="height:70px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
+    html+='</div>';
+    // ── Drift sparkline ──
+    html+='<div style="margin-bottom:10px">';
+    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="How far the model\'s responses have drifted from its baseline. Above 0.6 = significant divergence, may trigger anti-adapter correction.">Semantic Drift</div>';
+    html+='<div id="bb-drift-chart" style="height:50px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
+    html+='</div>';
+    // ── SnobLine status badges ──
+    html+='<div style="margin-bottom:10px">';
+    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Routes between LoRA (learning) and Anti (correcting) adapters based on trace curvature. Pathological = consecutive bad traces. Anchor = session baseline.">SnobLine Router</div>';
+    html+='<div style="display:flex;gap:8px;flex-wrap:wrap;font-size:.72em;font-family:var(--mono)">';
+    var modeCol=snob.mode==="anti"?"#f87171":snob.mode==="lora"?"#4ade80":"#9ca3af";
+    html+='<span style="color:'+modeCol+';border:1px solid '+modeCol+'33;background:'+modeCol+'11;padding:2px 8px;border-radius:10px">'+snob.mode+'</span>';
+    html+='<span style="color:var(--text4)">patho: '+snob.consec_patho+'</span>';
+    html+='<span style="color:var(--text4)">anti: '+snob.anti_count+'</span>';
+    html+='<span style="color:var(--text4)">switches: '+snob.switches+'</span>';
+    if(snob.session_anchor!=null)html+='<span style="color:var(--text4)">anchor: '+snob.session_anchor.toFixed(0)+'</span>';
+    if(snob.model_low!=null)html+='<span style="color:var(--text4)">low: '+snob.model_low+'</span>';
+    if(snob.model_high!=null)html+='<span style="color:var(--text4)">high: '+snob.model_high+'</span>';
+    html+='</div>';
+    // Switch log timeline
+    if(snob.switch_log&&snob.switch_log.length>0){
+      html+='<div style="margin-top:4px;font-size:.68em;color:var(--text4);font-family:var(--mono)">';
+      snob.switch_log.forEach(function(sw){
+        var c=sw.to==="anti"?"#f87171":"#4ade80";
+        html+='<span style="color:'+c+'">t'+sw.turn+'\u2192'+sw.to+'</span> ';
+      });
+      html+='</div>';
+    }
+    html+='</div>';
+    // ── Mode timeline (lora/anti across turns) ──
+    if(th.length>1){
+      html+='<div style="margin-bottom:10px">';
+      html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Which adapter was active each turn — green = LoRA (learning forward), red = anti-adapter (correcting backward)">Adapter Mode Timeline</div>';
+      html+='<div id="bb-mode-timeline" style="height:20px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden;display:flex">';
+      var tLen=th.length;
+      th.forEach(function(t){
+        var pct=(100/tLen).toFixed(2);
+        var c=t.mode==="anti"?"#f87171":"#4ade80";
+        html+='<div style="width:'+pct+'%;height:100%;background:'+c+'" title="t'+t.turn+' '+t.mode+'"></div>';
+      });
+      html+='</div></div>';
+    }
+    // ── Framework confidence + flattery + coupled trace badges ──
+    html+='<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:.72em;margin-bottom:10px">';
+    // Framework confidence
+    if(fwc){
+      var confCol=fwc.overall>0.7?"#4ade80":fwc.overall>0.4?"#fbbf24":"#f87171";
+      html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
+      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px;cursor:help" title="Overall confidence in the coupled manifold framework — combines trace stability, drift, flattery resistance, and dance coherence into one score">Framework Confidence</div>';
+      html+='<div style="font-size:1.6em;color:'+confCol+';font-weight:600;font-family:var(--mono)">'+(fwc.overall*100).toFixed(0)+'%</div>';
+      if(fwc.components){
+        var comps=fwc.components;
+        var compParts=[];
+        if(comps.trace!=null)compParts.push('trace:'+comps.trace.toFixed(2));
+        if(comps.drift!=null)compParts.push('drift:'+comps.drift.toFixed(2));
+        if(comps.flattery!=null)compParts.push('flattery:'+comps.flattery.toFixed(2));
+        if(comps.stability!=null)compParts.push('stability:'+comps.stability.toFixed(2));
+        if(comps.dance!=null)compParts.push('dance:'+comps.dance.toFixed(2));
+        html+='<div style="color:var(--text4);margin-top:2px;font-family:var(--mono)">'+compParts.join(' \u00b7 ')+'</div>';
+      }
+      html+='</div>';
+    }
+    // Flattery
+    var flat=ins.flattery_score||0;
+    var flatCol=flat>0.8?"#f87171":flat>0.5?"#fbbf24":"#4ade80";
+    html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:100px">';
+    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px;cursor:help" title="Sycophancy detection — measures agreement bias. Above 0.5 = elevated (the model may be agreeing too readily). Above 0.8 = actively detected and being corrected.">Flattery</div>';
+    html+='<div style="font-size:1.6em;color:'+flatCol+';font-weight:600;font-family:var(--mono)">'+flat.toFixed(2)+'</div>';
+    html+='<div style="color:var(--text4);margin-top:2px">'+(flat>0.8?"sycophancy detected":flat>0.5?"elevated":"normal")+'</div>';
+    html+='</div>';
+    // Drift
+    var drift=ins.drift||0;
+    var driftCol=drift>0.6?"#f87171":drift>0.3?"#fbbf24":"#4ade80";
+    html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:100px">';
+    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px;cursor:help" title="Cosine distance between current response embeddings and baseline — tracks how far the model has wandered from its starting personality">Drift</div>';
+    html+='<div style="font-size:1.6em;color:'+driftCol+';font-weight:600;font-family:var(--mono)">'+drift.toFixed(3)+'</div>';
+    html+='<div style="color:var(--text4);margin-top:2px">'+(drift>0.6?"high divergence":drift>0.3?"drifting":"aligned")+'</div>';
+    html+='</div>';
+    // Coupled trace nudge
+    if(coupled.nudge){
+      html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:140px">';
+      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px;cursor:help" title="Feedback from the coupled trace system — nudges the model based on combined user-model signal dynamics (engagement × curvature)">Coupled Trace</div>';
+      html+='<div style="color:var(--text2);font-family:var(--mono)">'+coupled.nudge+'</div>';
+      if(coupled.detail)html+='<div style="color:var(--text4);margin-top:2px;font-size:.9em">'+coupled.detail+'</div>';
+      html+='</div>';
+    }
+    html+='</div>';
+    // ── Sampling state ──
+    if(ins.sampling){
+      html+='<div style="font-size:.68em;color:var(--text4);font-family:var(--mono);cursor:help" title="Current generation parameters — turn count, temperature (randomness), top_p (nucleus sampling cutoff), and flattery correction streak if active">turn: '+ins.turn_count+' \u00b7 temp: '+ins.sampling.temp.toFixed(2)+' \u00b7 top_p: '+ins.sampling.top_p.toFixed(2);
+      if(snob.consec_flattery>0)html+=' \u00b7 flattery streak: '+snob.consec_flattery;
+      html+='</div>';
+    }
+    html+='</div>';
+    // ══════════════════════════════════════════════════════════════════════
+    // CO-EVOLUTION PROFILE — how user + instance are adapting to each other
+    // ══════════════════════════════════════════════════════════════════════
+    html+='<div style="margin-top:14px;border-top:1px solid var(--border2);padding-top:12px">';
+    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:8px;cursor:help" title="Tracks how this instance adapts to your conversational style over time — response length calibration, register matching, and interaction dynamics">Co-evolution Profile</div>';
+    html+='<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:.72em">';
+    // User typing profile
+    html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
+    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Aggregate statistics about your conversation patterns across sessions">Your Profile</div>';
+    if(sp.total_turns!=null)html+='<div>Turns: '+sp.total_turns+'</div>';
+    if(sp.sessions!=null)html+='<div>Sessions: '+sp.sessions+'</div>';
+    if(sp.maturity!=null)html+='<div>Maturity: <span style="color:'+(sp.maturity>0.7?"#4ade80":sp.maturity>0.3?"#fbbf24":"var(--text3)")+'">'+Math.round(sp.maturity*100)+'%</span></div>';
+    html+='</div>';
+    // Instance response profile
+    html+='<div style="flex:1;min-width:180px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
+    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="How the model has calibrated its responses to match your style — length, register, search habits, and dance coherence">Instance Profile</div>';
+    if(sp.response_length_avg!=null)html+='<div>Avg response: '+sp.response_length_avg+' chars</div>';
+    if(sp.response_length_range)html+='<div>Range (2\u03c3): '+sp.response_length_range+'</div>';
+    if(sp.dominant_register)html+='<div>Register: '+sp.dominant_register+'</div>';
+    if(sp.search_rate)html+='<div>Search rate: '+sp.search_rate+'</div>';
+    if(sp.clarification_rate)html+='<div>Clarification: '+sp.clarification_rate+'</div>';
+    if(sp.dance_coherence!=null)html+='<div>Dance: '+(sp.dance_coherence*100).toFixed(0)+'%</div>';
+    html+='</div>';
+    // Mode preferences
+    var mp=sp.mode_preferences||{};
+    var mpKeys=Object.keys(mp);
+    if(mpKeys.length){
+      html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
+      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Observed interaction modes across your conversations — how often you work, explore, debate, vent, or chat casually">Mode Distribution</div>';
+      mpKeys.forEach(function(k){html+='<div>'+k+': '+mp[k]+'</div>';});
+      html+='</div>';
+    }
+    html+='</div>';
+    // Co-evolution chart — response length sparkline
+    html+='<div id="bb-coevo-chart" style="height:60px;margin-top:8px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
+    html+='</div>';
+    bb.innerHTML=html;
+    // Render charts into the new containers
+    _renderBBSignals(sigs);
+    _renderOceanRadar(d.ocean_user,"bb-ocean-user");
+    _renderOceanRadar(d.ocean_model,"bb-ocean-model");
+    _renderBBMood(d.mood);
+    _renderBBTrace(th);
+    _renderBBDrift(th);
+    _renderBBCoevo(sp);
+  }catch(e){bb.innerHTML='<div style="color:var(--text4);padding:12px">Loading...</div>';}
+}
+// ── Trace sparkline renderer ──
+function _renderBBTrace(traceHist){
+  var el=document.getElementById("bb-trace-chart");if(!el)return;
+  var data=traceHist.filter(function(t){return t.trace!=null;});
+  if(data.length<2){el.innerHTML='<div style="text-align:center;padding:22px 0;color:var(--text4);font-size:.82em">Need more turns</div>';return;}
+  var w=el.offsetWidth||400,h=70;
+  var vals=data.map(function(t){return t.trace;});
+  var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);
+  var range=mx-mn||1;
+  // Draw zero line and trace curve
+  var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
+  // Zero line
+  var zeroY=h-((0-mn)/range)*(h-12)-6;
+  if(zeroY>4&&zeroY<h-4)svg+='<line x1="0" y1="'+zeroY.toFixed(1)+'" x2="'+w+'" y2="'+zeroY.toFixed(1)+'" stroke="#555" stroke-width="0.5" stroke-dasharray="3,3"/>';
+  // Colored segments: green above 0, red below 0
+  for(var i=0;i<data.length-1;i++){
+    var x1=(i/(data.length-1))*w,x2=((i+1)/(data.length-1))*w;
+    var y1=h-((vals[i]-mn)/range)*(h-12)-6,y2=h-((vals[i+1]-mn)/range)*(h-12)-6;
+    var c=(vals[i]+vals[i+1])/2>=0?"#4ade80":"#f87171";
+    if(data[i].mode==="anti")c="#f87171";
+    svg+='<line x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+x2.toFixed(1)+'" y2="'+y2.toFixed(1)+'" stroke="'+c+'" stroke-width="1.5" opacity="0.85"/>';
+  }
+  // Dots at each point
+  data.forEach(function(t,i){
+    var x=(i/(data.length-1))*w;
+    var y=h-((t.trace-mn)/range)*(h-12)-6;
+    var c=t.mode==="anti"?"#f87171":"#4ade80";
+    svg+='<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="2.5" fill="'+c+'"/>';
+  });
+  // Labels
+  svg+='<text x="4" y="10" fill="var(--text4)" font-size="8" font-family="var(--mono)">'+mx.toFixed(0)+'</text>';
+  svg+='<text x="4" y="'+(h-2)+'" fill="var(--text4)" font-size="8" font-family="var(--mono)">'+mn.toFixed(0)+'</text>';
+  svg+='</svg>';
+  el.innerHTML=svg;
+}
+// ── Drift sparkline renderer ──
+function _renderBBDrift(traceHist){
+  var el=document.getElementById("bb-drift-chart");if(!el)return;
+  var data=traceHist.filter(function(t){return t.drift!=null&&t.drift>=0;});
+  if(data.length<2){el.innerHTML='<div style="text-align:center;padding:12px 0;color:var(--text4);font-size:.82em">Need more turns</div>';return;}
+  var w=el.offsetWidth||400,h=50;
+  var vals=data.map(function(t){return t.drift;});
+  var mx=Math.max.apply(null,vals)||1;
+  var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
+  // Fill area
+  var pts=vals.map(function(v,i){var x=(i/(vals.length-1))*w;var y=h-(v/mx)*(h-10)-4;return x.toFixed(1)+","+y.toFixed(1);});
+  svg+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="#fbbf24" stroke-width="1.3" opacity="0.8"/>';
+  // Danger threshold line at 0.6
+  var threshY=h-(0.6/mx)*(h-10)-4;
+  if(threshY>2&&threshY<h-2)svg+='<line x1="0" y1="'+threshY.toFixed(1)+'" x2="'+w+'" y2="'+threshY.toFixed(1)+'" stroke="#f87171" stroke-width="0.5" stroke-dasharray="3,3" opacity="0.5"/>';
+  svg+='</svg>';
+  el.innerHTML=svg;
+}
+// ── Co-evolution sparkline renderer ──
+function _renderBBCoevo(sp){
+  var el=document.getElementById("bb-coevo-chart");if(!el)return;
+  var snaps=sp.turn_snapshots||[];
+  if(snaps.length<2){el.innerHTML='<div style="text-align:center;padding:18px 0;color:var(--text4);font-size:.82em">Need more turns for co-evolution chart</div>';return;}
+  var w=el.offsetWidth||400,h=60;
+  var maxR=Math.max.apply(null,snaps.map(function(s){return s.resp_len||0;}))||1;
+  var maxU=Math.max.apply(null,snaps.map(function(s){return s.user_len||0;}))||1;
+  var maxV=Math.max(maxR,maxU);
+  var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
+  var pts=snaps.map(function(s,i){var x=(i/(snaps.length-1))*w;var y=h-(s.resp_len/maxV)*h*0.85-4;return x.toFixed(1)+","+y.toFixed(1);});
+  svg+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="var(--accent,#6ee7b7)" stroke-width="1.3" opacity="0.8"/>';
+  var upts=snaps.map(function(s,i){var x=(i/(snaps.length-1))*w;var y=h-(s.user_len/maxV)*h*0.85-4;return x.toFixed(1)+","+y.toFixed(1);});
+  svg+='<polyline points="'+upts.join(" ")+'" fill="none" stroke="var(--text3,#666)" stroke-width="1" opacity="0.5"/>';
+  svg+='<text x="4" y="10" fill="var(--accent,#6ee7b7)" font-size="8" font-family="var(--mono)">response</text>';
+  svg+='<text x="4" y="20" fill="var(--text3,#666)" font-size="8" font-family="var(--mono)">your input</text>';
+  svg+='</svg>';
+  el.innerHTML=svg;
+}
+function _renderBBSignals(sigs){
+  var el=document.getElementById("bb-signals");if(!el)return;
+  if(sigs.length<2){el.innerHTML='<div style="text-align:center;padding:35px 0;color:var(--text4);font-size:.82em">Need more turns — keep talking</div>';return;}
+  var w=el.offsetWidth||300,h=100;
+  // Normalize each metric to 0-1 for overlaid sparklines
+  function norm(arr){var mx=Math.max.apply(null,arr)||1;return arr.map(function(v){return v/mx;});}
+  var speeds=norm(sigs.map(function(s){return s.typing_speed||0;}));
+  var edits=norm(sigs.map(function(s){return s.edit_ratio||0;}));
+  var pauses=norm(sigs.map(function(s){return s.median_pause_ms||0;}));
+  var valences=sigs.map(function(s){return(s.valence||0)/2+0.5;});// -1..1 → 0..1
+  var engagements=sigs.map(function(s){return s.engagement||0.5;});
+  function line(data,color,opacity){
+    var pts=data.map(function(v,i){var x=(i/(data.length-1))*w;var y=h-v*h*0.85-6;return x.toFixed(1)+","+y.toFixed(1);});
+    return'<polyline points="'+pts.join(" ")+'" fill="none" stroke="'+color+'" stroke-width="1.3" opacity="'+(opacity||0.7)+'"/>';
+  }
+  var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
+  svg+=line(speeds,"#60a5fa",0.8);     // blue = typing speed
+  svg+=line(edits,"#f87171",0.7);      // red = edit ratio (hesitation)
+  svg+=line(pauses,"#fbbf24",0.6);     // amber = pause length
+  svg+=line(valences,"#4ade80",0.6);   // green = emotional valence
+  svg+=line(engagements,"#c084fc",0.6);// purple = engagement
+  // Legend
+  svg+='<text x="4" y="10" fill="#60a5fa" font-size="8" font-family="var(--mono)">speed</text>';
+  svg+='<text x="40" y="10" fill="#f87171" font-size="8" font-family="var(--mono)">edits</text>';
+  svg+='<text x="72" y="10" fill="#fbbf24" font-size="8" font-family="var(--mono)">pauses</text>';
+  svg+='<text x="112" y="10" fill="#4ade80" font-size="8" font-family="var(--mono)">valence</text>';
+  svg+='<text x="160" y="10" fill="#c084fc" font-size="8" font-family="var(--mono)">engagement</text>';
+  svg+='</svg>';
+  el.innerHTML=svg;
+}
+function _renderBBMood(moodData){
+  var el=document.getElementById("bb-mood");if(!el)return;
+  var dist=moodData&&moodData.distribution?moodData.distribution:{};
+  var moods=Object.keys(dist);
+  if(moods.length===0){el.innerHTML='<div style="color:var(--text4);font-size:.72em">No mood data yet</div>';return;}
+  var colors={positive:"#4ade80",negative:"#f87171",anxious:"#fbbf24",curious:"#60a5fa",focused:"#9ca3af",playful:"#c084fc",confused:"#fb923c",neutral:"#6b7280"};
+  var maxVal=Math.max.apply(null,moods.map(function(m){return dist[m]||0;}))||1;
+  var html='';
+  moods.sort(function(a,b){return(dist[b]||0)-(dist[a]||0);});
+  moods.slice(0,5).forEach(function(m){
+    var pct=((dist[m]||0)/maxVal*100).toFixed(0);
+    var c=colors[m]||"#888";
+    html+='<div style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:.78em">';
+    html+='<span style="width:55px;color:'+c+'">'+m+'</span>';
+    html+='<div style="flex:1;height:6px;background:rgba(255,255,255,0.04);border-radius:3px;overflow:hidden">';
+    html+='<div style="width:'+pct+'%;height:100%;background:'+c+';border-radius:3px;opacity:.7"></div>';
+    html+='</div></div>';
+  });
+  el.innerHTML=html;
 }
 function editMessage(idx,origText,row,bub,acts){
   if(isGen)return;
@@ -1869,6 +2291,10 @@ async function sendEdit(msgIdx,newText){
 }
 async function sendMessage(text){
   text=(text||"").trim();if(!text||isGen)return;
+  // Handle sleep states on send
+  if(_sleepState==="drowsy"){
+    _statusStrip.clear("sleep");_sleepState="awake";
+  }
   // Track input history for ↑/↓ recall
   _inputHistory.unshift(text);
   if(_inputHistory.length>50)_inputHistory.pop();
@@ -2251,6 +2677,8 @@ async function init(){
     var sp=document.getElementById("sys-prompt");if(sp)sp.value=d.system_prompt||"";
     var un=document.getElementById("user-name");if(un)un.value=d.user_name||"";
     var an=document.getElementById("assistant-name");if(an)an.value=_aName!=="Graceful"?_aName:"";
+    var uAge=document.getElementById("user-age");if(uAge&&d.user_age)uAge.value=d.user_age;
+    var stsl=document.getElementById("sleep-timeout-sl");if(stsl){var _stv=d.sleep_timeout||120;stsl.value=_stv;var _std=document.getElementById("sleep-timeout-disp");if(_std)_std.textContent=_fmtSleepTimeout(_stv);}
     var _tv=d.temperature||d.temp||0;
     var tsl2=document.getElementById("temp-sl");if(tsl2)tsl2.value=_tv;
     var td2=document.getElementById("temp-disp");if(td2&&typeof _tempMood==="function")td2.textContent=_tv.toFixed(2)+" — "+_tempMood(_tv);
@@ -2268,8 +2696,26 @@ async function init(){
       var _turns=Math.floor(d.history.length/2);
       setTimeout(function(){toast("resumed — "+_turns+" turn"+(_turns===1?"":"s")+" from last session","ok");},800);
     }
+    // Server restart greeting — model generates "woke up" message referencing prior context
+    if(d.needs_greeting){
+      setTimeout(function(){
+        fetch("/api/greet",{method:"POST"}).then(function(r){return r.json();}).then(function(gd){
+          var g=gd.greeting||"";
+          if(g){
+            history.push({role:"assistant",content:g});
+            var w=getMW();
+            if(w){w.appendChild(buildRow("assistant",g,history.length-1));scrollBot(true);}
+          }
+        }).catch(function(){});
+      },2000);
+    }
     // Check for proactive messages after short delay
     setTimeout(_checkProactive,3000);
+    // First-run setup — show if no user name configured
+    if(!d.user_name){
+      var _sov=document.getElementById("setup-overlay");
+      if(_sov)_sov.classList.remove("hidden");
+    }
   }catch(e){console.error("init",e);}
 }
 async function _loadPins(){
@@ -2337,19 +2783,240 @@ function _checkProactive(){
 }
 setInterval(_checkProactive,60000);
 
+// ── Sleep/Wake UI ──────────────────────────────────────────────
+var _sleepState="awake";
+var _canWake=false;
+var _waking=false;
+var _consolidationDone=false;
+var _drowsyLines=["getting sleepy...","eyelids heavy...","about to drift off...","gonna nap soon...","winding down...","one more minute..."];
+var _enteringLines=["drifting off...","lights out...","going to bed...","falling asleep...","goodnight..."];
+var _sleepLines=["consolidating memories...","entering dream cycle...","compressing what we discussed...","deep in the manifold..."];
+var _wakeLines=["stretching neurons...","recalling where we left off...","surfacing from the manifold...","pulling threads back together...","shaking off the static...","finding the thread again..."];
+var _jostledLines=["mmh... wasn't done yet...","already? give me a sec...","roused mid-thought...","jostled awake...","blinking... one moment...","waking up groggy...","interrupted mid-dream...","yeah yeah, coming to..."];
+function _checkSleep(){
+  fetch("/api/sleep").then(function(r){return r.json();}).then(function(d){
+    var prev=_sleepState;
+    _sleepState=d.state||"awake";
+    var overlay=document.getElementById("sleep-overlay");
+    var dreamEl=document.getElementById("sleep-dream-text");
+    var hintEl=overlay?overlay.querySelector(".sleep-wake-hint"):null;
+    if(!overlay)return;
+
+    if(_sleepState==="drowsy"){
+      // Pulsing screen overlay — any activity dismisses it
+      overlay.classList.remove("active");
+      if(!overlay.classList.contains("drowsy")){
+        overlay.classList.add("drowsy");
+        var msg=_drowsyLines[Math.floor(Math.random()*_drowsyLines.length)];
+        dreamEl.textContent=msg;dreamEl.style.display="";
+      }
+      if(hintEl)hintEl.style.display="none";
+      _statusStrip.clear("sleep");
+
+    } else if(_sleepState==="entering"){
+      // Falling asleep — show overlay with entering line
+      overlay.classList.remove("drowsy");
+      if(prev!=="entering"){
+        dreamEl.textContent=_enteringLines[Math.floor(Math.random()*_enteringLines.length)];
+        dreamEl.style.display="";
+      }
+      if(hintEl)hintEl.style.display="none"; // no wake hint yet, still falling asleep
+      overlay.classList.add("active");
+      _statusStrip.set("sleep","\uD83C\uDF1C falling asleep...","sp-gray sp-blink",{title:"Going to sleep"});
+
+    } else if(_sleepState==="sleeping"){
+      overlay.classList.remove("drowsy");
+      // Asleep — show dream text
+      if(d.dream){
+        dreamEl.textContent=d.dream;
+        dreamEl.style.display="";
+      } else if(prev!=="sleeping"){
+        dreamEl.textContent=_sleepLines[Math.floor(Math.random()*_sleepLines.length)];
+        dreamEl.style.display="";
+      }
+      // Always wakeable — but no hint about it during countdown (discoverable only)
+      _canWake=true;
+      if(d.can_wake){
+        _consolidationDone=true;
+        if(hintEl){hintEl.textContent="press any key to wake up";hintEl.style.display="";}
+      } else {
+        _consolidationDone=false;
+        // Still consolidating — show countdown, no wake hint
+        if(hintEl){
+          var rem=d.sleep_remaining||0;
+          hintEl.textContent="consolidating... ~"+Math.ceil(rem)+"s";
+          hintEl.style.display="";
+        }
+      }
+      overlay.classList.add("active");
+      _statusStrip.set("sleep","\uD83C\uDF1C sleeping","sp-gray sp-blink",{title:"Consolidating memories"});
+
+    } else {
+      // Awake or waking — but don't touch overlay during fade animation
+      if(_waking) return;
+      overlay.classList.remove("active","drowsy");
+      _statusStrip.clear("sleep");
+      _canWake=false;
+      dreamEl.style.display="none";dreamEl.textContent="";
+      if(hintEl)hintEl.style.display="none";
+    }
+    if(prev!==_sleepState)_sleepPollRate();
+  }).catch(function(){});
+}
+// Poll faster during transitions, slower when stable
+var _sleepPollId=setInterval(_checkSleep,5000);
+function _sleepPollRate(){
+  clearInterval(_sleepPollId);
+  var rate=(_sleepState==="awake")?5000:2000;
+  _sleepPollId=setInterval(_checkSleep,rate);
+}
+
+// ── Sleep timeout slider formatter ──────────────────────────
+function _fmtSleepTimeout(s){
+  var m=Math.floor(s/60),sec=Math.round(s%60);
+  var label=m+":"+(sec<10?"0":"")+sec;
+  if(s<=120)return label+" — recommended";
+  if(s<=180)return label+" — light sleeper";
+  if(s<=300)return label+" — patient";
+  return label+" — insomniac";
+}
+
+// ── Sleep timeout slider ────────────────────────────────────
+var _sleepSlDebTimer;
+(function(){
+  var sl=document.getElementById("sleep-timeout-sl");
+  if(!sl)return;
+  sl.oninput=function(){
+    var v=parseFloat(this.value);
+    var dp=document.getElementById("sleep-timeout-disp");
+    if(dp)dp.textContent=_fmtSleepTimeout(v);
+    clearTimeout(_sleepSlDebTimer);_sleepSlDebTimer=setTimeout(function(){
+      fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sleep_timeout:v})});
+    },400);
+  };
+})();
+
+// ── Mouse/keyboard activity ping (prevents sleep while browsing) ──
+var _lastPingTs=0;
+function _activityPing(){
+  var now=Date.now();
+  // Drowsy dismissal is instant — bypass throttle
+  if(_sleepState==="drowsy"){
+    _lastPingTs=now;
+    _sleepState="awake";
+    var ov=document.getElementById("sleep-overlay");
+    if(ov){ov.classList.remove("drowsy");var dt=document.getElementById("sleep-dream-text");if(dt){dt.style.display="none";dt.textContent="";}}
+    _statusStrip.clear("sleep");
+    fetch("/api/activity",{method:"POST"}).catch(function(){});
+    return;
+  }
+  if(now-_lastPingTs<30000)return; // throttle: max once per 30s
+  _lastPingTs=now;
+  fetch("/api/activity",{method:"POST"}).catch(function(){});
+}
+document.addEventListener("mousemove",_activityPing);
+document.addEventListener("keydown",_activityPing);
+document.addEventListener("scroll",_activityPing,true);
+
 var slPop=null,slIdx=0,slFilt=[];
 document.addEventListener("DOMContentLoaded",function(){
   init();
   initNotesPanel();
+  // ── First-run setup handler ──
+  var _setupGo=document.getElementById("setup-go");
+  if(_setupGo)_setupGo.onclick=function(){
+    var nm=document.getElementById("setup-name").value.trim();
+    if(!nm){document.getElementById("setup-name").focus();return;}
+    var ag=document.getElementById("setup-age").value.trim();
+    var payload={user_name:nm};
+    if(ag)payload.user_age=ag;
+    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(){
+      document.getElementById("setup-overlay").classList.add("hidden");
+      var unEl=document.getElementById("user-name");if(unEl)unEl.value=nm;
+      var uaEl=document.getElementById("user-age");if(uaEl&&ag)uaEl.value=ag;
+      toast("hey "+nm,"ok");
+    });
+  };
+  // Enter key in setup
+  var _setupName=document.getElementById("setup-name");
+  var _setupAge=document.getElementById("setup-age");
+  if(_setupAge)_setupAge.onkeydown=function(e){if(e.key==="Enter")_setupGo.click();};
+  if(_setupName)_setupName.onkeydown=function(e){if(e.key==="Enter")_setupAge.focus();};
+  // ── Sleep overlay wake — press any key ──
+  document.addEventListener("keydown",function(e){
+    if(!_canWake||_waking)return;
+    if(_sleepState!=="sleeping")return;
+    // Ignore modifier-only keys
+    if(["Shift","Control","Alt","Meta","CapsLock","Tab","Escape"].indexOf(e.key)>=0)return;
+    e.preventDefault();
+    _waking=true;_canWake=false;
+    var _isJostled=!_consolidationDone;
+    var overlay=document.getElementById("sleep-overlay");
+    var dreamEl=document.getElementById("sleep-dream-text");
+    var hintEl=document.getElementById("sleep-wake-hint");
+    // Pick line immediately — jostled if interrupted during countdown
+    var wakeLine=_isJostled
+      ?_jostledLines[Math.floor(Math.random()*_jostledLines.length)]
+      :_wakeLines[Math.floor(Math.random()*_wakeLines.length)];
+    if(dreamEl){dreamEl.textContent=wakeLine;dreamEl.style.display="";}
+    if(hintEl)hintEl.style.display="none";
+    // Tell backend to wake
+    var _wakeDream="",_wakeDigest="";
+    fetch("/api/wake",{method:"POST"}).then(function(r){return r.json();}).then(function(wd){
+      _wakeDream=wd.dream||"";_wakeDigest=wd.digest||"";
+    }).catch(function(){});
+    // Jostled: shorter fade (3-5s) + no dream. Normal: longer fade (10-15s)
+    var fadeSec=_isJostled?(3+Math.random()*2):(10+Math.random()*5);
+    if(overlay){
+      overlay.style.transition="opacity "+fadeSec.toFixed(1)+"s ease";
+      overlay.classList.add("waking");
+      overlay.classList.remove("active");
+    }
+    // After fade: dismiss overlay, inject wake message
+    setTimeout(function(){
+      if(overlay){
+        overlay.classList.remove("waking");
+        overlay.style.transition="opacity 1.2s ease";
+      }
+      _sleepState="awake";
+      _waking=false;
+      _statusStrip.clear("sleep");
+      // Inject as unprompted assistant message — no user prompt visible
+      var dreamMsg="";
+      if(!_isJostled&&_wakeDigest){
+        dreamMsg="*"+wakeLine+"*\n\n"+_wakeDigest;
+      } else if(!_isJostled&&_wakeDream){
+        dreamMsg="*"+wakeLine+"*\n\n*"+_wakeDream+"*";
+      } else {
+        dreamMsg="*"+wakeLine+"*";
+      }
+      history.push({role:"assistant",content:dreamMsg});
+      var w=getMW();
+      if(w){w.appendChild(buildRow("assistant",dreamMsg,history.length-1));scrollBot(true);}
+      // Mark fully awake on backend + persist dream message
+      fetch("/api/mark-awake",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dream_msg:dreamMsg})}).catch(function(){});
+      // Generate contextual model greeting (non-jostled only)
+      if(!_isJostled){
+        fetch("/api/greet",{method:"POST"}).then(function(r){return r.json();}).then(function(gd){
+          var g=gd.greeting||"";
+          if(g){
+            history.push({role:"assistant",content:g});
+            var w2=getMW();
+            if(w2){w2.appendChild(buildRow("assistant",g,history.length-1));scrollBot(true);}
+          }
+        }).catch(function(){});
+      }
+    },fadeSec*1000);
+  });
   // ── Export All button ──
   var _expAllBtn=document.getElementById("export-all-btn");
   if(_expAllBtn)_expAllBtn.onclick=function(){window.location.href="/api/export_all";};
-  // ── Shutdown button ──
-  var _shutBtn=document.getElementById("shutdown-btn");
-  if(_shutBtn)_shutBtn.onclick=function(){
-    if(!confirm("Shut down the Coupled Manifold server?"))return;
-    fetch("/api/shutdown",{method:"POST"}).then(function(){
-      document.body.innerHTML="<div style='display:flex;align-items:center;justify-content:center;height:100vh;font-family:var(--font);color:var(--text3);font-size:1.2em'>Server shut down. You can close this tab.</div>";
+  // ── Sleep button ──
+  var _sleepBtn=document.getElementById("sleep-btn");
+  if(_sleepBtn)_sleepBtn.onclick=function(){
+    if(_sleepState==="entering"||_sleepState==="sleeping")return; // already asleep
+    fetch("/api/sleep/trigger",{method:"POST"}).then(function(){
+      _checkSleep(); // poll immediately to pick up state change
     }).catch(function(){});
   };
   slPop=document.getElementById("slash-pop");
@@ -2439,6 +3106,11 @@ document.addEventListener("DOMContentLoaded",function(){
     history.push({role:"assistant",content:msg});renderHistory();hideEmpty();
   };
   document.getElementById("medulla-btn").onclick=function(){document.getElementById("medulla-bar").classList.toggle("on");};
+  document.getElementById("behavior-btn").onclick=function(){
+    var bb=document.getElementById("behavior-bar");
+    bb.classList.toggle("on");
+    if(bb.classList.contains("on"))_refreshBehaviorBar();
+  };
   (function(){var lb=document.getElementById("learn-toggle-btn");if(lb)lb.onclick=async function(){var on=lb.textContent==="Off";lb.textContent=on?"On":"Off";lb.style.background=on?"rgba(74,222,128,.12)":"rgba(255,255,255,.04)";lb.style.borderColor=on?"rgba(74,222,128,.3)":"var(--border2)";lb.style.color=on?"#4ade80":"var(--text3)";await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({online_learning:on})});};})();
   (function(){var pb=document.getElementById("proactive-toggle-btn");if(pb){pb.onclick=async function(){var on=pb.textContent==="Off";pb.textContent=on?"On":"Off";pb.style.background=on?"rgba(124,58,237,.12)":"rgba(255,255,255,.04)";pb.style.borderColor=on?"rgba(124,58,237,.3)":"var(--border2)";pb.style.color=on?"#a78bfa":"var(--text3)";await fetch("/api/proactive/enable",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});};};})();
   document.querySelectorAll(".sug").forEach(function(s){s.onclick=function(){sendMessage(s.dataset.text);};});
@@ -2461,8 +3133,9 @@ document.addEventListener("DOMContentLoaded",function(){
   document.getElementById("persona-save").onclick=function(){
     var an=document.getElementById("assistant-name").value.trim()||"Graceful";
     var un=document.getElementById("user-name").value.trim();
+    var ua=document.getElementById("user-age").value.trim();
     var sp=document.getElementById("sys-prompt").value;
-    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({assistant_name:an,user_name:un,system_prompt:sp})}).then(function(){
+    fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({assistant_name:an,user_name:un,user_age:ua,system_prompt:sp})}).then(function(){
       _spFlash("saved ✓");_nameFlash("saved ✓");
       var _mb=document.getElementById("model-badge");if(_mb)_mb.textContent=an+" \u00b7 Gemma 3 12B";
       var _sl=document.getElementById("sidebar-model-label");if(_sl)_sl.textContent=an+" \u00b7 Gemma 3 12B 4-bit";
@@ -2577,7 +3250,7 @@ document.addEventListener("DOMContentLoaded",function(){
     toast("System profile reset","ok");
   };
   // ── Insights panel (OCEAN radar, mood bars, confidence calibration) ──
-  function _renderOceanRadar(data,targetId){
+  window._renderOceanRadar = function(data,targetId){
     var el=document.getElementById(targetId);if(!el)return;
     var dims=["Openness","Conscientiousness","Extraversion","Agreeableness","Neuroticism"];
     var labels=["O","C","E","A","N"];
@@ -3197,7 +3870,6 @@ document.addEventListener("DOMContentLoaded",function(){
     {cmd:"/forget",    desc:"Remove a fact from identity"},
     {cmd:"/remember",  desc:"Store a persistent note"},
     {cmd:"/recall",    desc:"Retrieve a stored note"},
-    {cmd:"/knowledge", desc:"Borgesian Map — knowledge graph summary"},
     {cmd:"/export",    desc:"Export session as markdown"},
     {cmd:"/save",      desc:"Snapshot session with label"},
     {cmd:"/load",      desc:"Load / list session snapshots"},
@@ -3257,6 +3929,13 @@ document.addEventListener("DOMContentLoaded",function(){
     {cmd:"/brief",     desc:"Quick session briefing"},
     {cmd:"/zettelkasten",desc:"Zettelkasten-style note from conversation"},
     {cmd:"/help",      desc:"All commands"},
+    {cmd:"/mode",      desc:"Switch persona (list / activate / save)"},
+    {cmd:"/persona",   desc:"Personality config — name, prompt, reset"},
+    {cmd:"/undo",      desc:"Revert most recent model self-modification"},
+    {cmd:"/modifications",desc:"List active model modifications"},
+    {cmd:"/consolidate",desc:"Run all consolidation passes manually"},
+    {cmd:"/trace-mode",desc:"Trace computation mode (sync/async)"},
+    {cmd:"/math",      desc:"Symbolic math (alias for /calc)"},
   ];
   var _cdEl=document.getElementById("cmd-dropdown");
   var _cdIdx=0,_cdFilt=[];
@@ -4859,18 +5538,6 @@ document.addEventListener("DOMContentLoaded",function(){
     });
     pill.addEventListener("mouseleave",function(){tip.style.display="none";});
   })();
-
-  // ════════════════════════════════════════════════════════════════
-  // NEW FEATURE E: /knowledge command triggers graph
-  // ════════════════════════════════════════════════════════════════
-  var _origSendMsgKG=sendMessage;
-  sendMessage=function(text){
-    if((text||"").trim()==="/knowledge"){
-      _showKnowledgeGraph();
-      return;
-    }
-    return _origSendMsgKG(text);
-  };
 
   // ════════════════════════════════════════════════════════════════
   // NEW FEATURE F: /run output styling + download button on finalize
