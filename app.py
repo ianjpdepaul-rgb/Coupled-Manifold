@@ -2688,7 +2688,7 @@ def chat(user_msg, history):
             "| `/finetune [steps]` | Fine-tune on indexed corpus |\n"
             "| `/trace` | Cross-session Hessian trace analytics |\n"
             "| `/spectrum` | LoRA adapter spectral (SVD) analysis |\n"
-            "| `/visionquality [low\\|medium\\|high\\|ultra]` | Vision token budget (70–1120 per image) |\n"
+            "| `/visionquality [low\\|medium\\|high\\|ultra]` | Vision token budget (64–1024 per image) |\n"
             "| `/experiment` | Run adversarial self-test (10 turns, doesn't affect session) |\n"
             "| `/learn [on\\|off]` | Toggle online LoRA updates |\n"
             "| `/adapter save <name>` | Save current adapter as named profile |\n"
