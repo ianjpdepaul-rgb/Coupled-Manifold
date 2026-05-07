@@ -89,6 +89,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #medulla-bar.on{display:block}
 #behavior-bar{display:none;font-size:.75em;color:var(--text3);font-family:var(--font);padding:10px 22px 14px;background:rgba(0,0,0,.28);border-bottom:1px solid var(--border2);flex-shrink:1;overflow-y:auto;max-height:38vh;min-height:0}
 #behavior-bar.on{display:block}
+#bb-tip{position:fixed;z-index:9999;max-width:280px;padding:6px 10px;background:#1a1a1a;border:1px solid #444;border-radius:6px;font-size:11px;color:#ccc;line-height:1.4;pointer-events:none;opacity:0;transition:opacity .15s;font-family:var(--font);box-shadow:0 4px 12px rgba(0,0,0,.4)}
+#bb-tip.show{opacity:1}
 #activity-bar{height:5px;background:rgba(255,255,255,.07);flex-shrink:0;cursor:pointer;position:relative;overflow:hidden;transition:background .6s ease;}
 #activity-bar.gen{background:rgba(0,0,0,.4)!important;transition:none!important;}
 #activity-bar.gen::after{content:"";position:absolute;top:0;left:-70%;width:55%;height:100%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.92) 50%,transparent);animation:abar-scan 1.2s ease-in-out infinite;}
@@ -641,6 +643,7 @@ input[type=range]{accent-color:var(--primary)!important;}
 </style>
 </head>
 <body>
+<div id="bb-tip"></div>
 <div id="sleep-overlay">
   <div id="sleep-box">
     <div class="sleep-icon">&#x1F31C;</div>
@@ -727,12 +730,7 @@ input[type=range]{accent-color:var(--primary)!important;}
         <div id="empty-title">manifold</div>
         <p>local model &middot; memory &middot; search<br>/ for commands &middot; &#8984;K for palette</p>
         <div id="resume-btn-wrap" style="display:none !important"></div>
-        <div id="suggestions">
-          <div class="sug" data-text="What do you know about me?">/who &mdash; what you know</div>
-          <div class="sug" data-text="/stats">/stats &mdash; system status</div>
-          <div class="sug" data-text="Summarize what I've been working on">/recap &mdash; recent work</div>
-          <div class="sug" data-text="/search latest AI research">/search &mdash; web search</div>
-        </div>
+        <div id="suggestions" style="display:none"></div>
       </div>
     </div>
     <button id="scroll-btn" title="Scroll to bottom">&#8595;</button>
@@ -1902,7 +1900,7 @@ async function _refreshBehaviorBar(){
     var html='<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">';
     // ── Behavioral signals chart ──
     html+='<div style="flex:1;min-width:280px">';
-    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:6px" title="Real-time keystroke and engagement signals captured from your typing patterns each turn">Your Behavioral Signals</div>';
+    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:6px" data-tip="Real-time keystroke and engagement signals captured from your typing patterns each turn">Your Behavioral Signals</div>';
     html+='<div id="bb-signals" style="height:100px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
     var modeCols={working:"#9ca3af",exploring:"#60a5fa",debating:"#c084fc",casual:"#4ade80",venting:"#f87171"};
     html+='<div style="display:flex;gap:10px;margin-top:6px;font-size:.72em;flex-wrap:wrap">';
@@ -1922,17 +1920,17 @@ async function _refreshBehaviorBar(){
     html+='</div>';
     // ── OCEAN radars ──
     html+='<div style="flex:0 0 320px;display:flex;gap:12px">';
-    html+='<div style="flex:1"><div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;text-align:center;cursor:help" title="Big Five personality radar for your messages this session — Openness, Conscientiousness, Extraversion, Agreeableness, Neuroticism">You</div>';
+    html+='<div style="flex:1"><div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;text-align:center" data-tip="Big Five personality radar for your messages this session — Openness, Conscientiousness, Extraversion, Agreeableness, Neuroticism">You</div>';
     html+='<div id="bb-ocean-user" style="height:130px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div></div>';
-    html+='<div style="flex:1"><div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;text-align:center;cursor:help" title="Big Five personality radar for the model\'s responses — mirrors and adapts to your conversational style">Model</div>';
+    html+='<div style="flex:1"><div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;text-align:center" data-tip="Big Five personality radar for the model\'s responses — mirrors and adapts to your conversational style">Model</div>';
     html+='<div id="bb-ocean-model" style="height:130px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div></div>';
     html+='</div>';
     // ── Mood + dance ──
     html+='<div style="flex:0 0 180px">';
-    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Dominant emotional tone of the conversation — classified from message sentiment and engagement patterns">Session Mood</div>';
+    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Dominant emotional tone of the conversation — classified from message sentiment and engagement patterns">Session Mood</div>';
     html+='<div id="bb-mood" style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 8px"></div>';
     if(d.ocean_dance){
-      html+='<div style="font-size:.72em;color:var(--text3);margin-top:8px;text-align:center;cursor:help" title="How well the model\'s OCEAN profile mirrors yours — 100% = perfect personality synchronization">Dance coherence: '+(d.ocean_dance.coherence*100).toFixed(0)+'%</div>';
+      html+='<div style="font-size:.72em;color:var(--text3);margin-top:8px;text-align:center" data-tip="How well the model\'s OCEAN profile mirrors yours — 100% = perfect personality synchronization">Dance coherence: '+(d.ocean_dance.coherence*100).toFixed(0)+'%</div>';
     }
     html+='</div>';
     html+='</div>';
@@ -1944,20 +1942,20 @@ async function _refreshBehaviorBar(){
     var fwc=ins.framework_confidence;
     var coupled=ins.coupled_trace||{};
     html+='<div style="margin-top:14px;border-top:1px solid var(--border2);padding-top:12px">';
-    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:8px" title="Internal model signals — adapter learning, routing decisions, and drift tracking">Model Behavior</div>';
+    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:8px" data-tip="Internal model signals — adapter learning, routing decisions, and drift tracking">Model Behavior</div>';
     // ── Hessian Trace sparkline ──
     html+='<div style="margin-bottom:10px">';
-    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="How much the model\'s weights are changing — high values mean it\'s learning something new, low means stable. Green = LoRA adapter, Red = anti-adapter correcting drift.">Hessian Trace (curvature)</div>';
+    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="How much the model\'s weights are changing — high values mean it\'s learning something new, low means stable. Green = LoRA adapter, Red = anti-adapter correcting drift.">Hessian Trace (curvature)</div>';
     html+='<div id="bb-trace-chart" style="height:70px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
     html+='</div>';
     // ── Drift sparkline ──
     html+='<div style="margin-bottom:10px">';
-    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="How far the model\'s responses have drifted from its baseline. Above 0.6 = significant divergence, may trigger anti-adapter correction.">Semantic Drift</div>';
+    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="How far the model\'s responses have drifted from its baseline. Above 0.6 = significant divergence, may trigger anti-adapter correction.">Semantic Drift</div>';
     html+='<div id="bb-drift-chart" style="height:50px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
     html+='</div>';
     // ── SnobLine status badges ──
     html+='<div style="margin-bottom:10px">';
-    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Routes between LoRA (learning) and Anti (correcting) adapters based on trace curvature. Pathological = consecutive bad traces. Anchor = session baseline.">SnobLine Router</div>';
+    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Routes between LoRA (learning) and Anti (correcting) adapters based on trace curvature. Pathological = consecutive bad traces. Anchor = session baseline.">SnobLine Router</div>';
     html+='<div style="display:flex;gap:8px;flex-wrap:wrap;font-size:.72em;font-family:var(--mono)">';
     var modeCol=snob.mode==="anti"?"#f87171":snob.mode==="lora"?"#4ade80":"#9ca3af";
     html+='<span style="color:'+modeCol+';border:1px solid '+modeCol+'33;background:'+modeCol+'11;padding:2px 8px;border-radius:10px">'+snob.mode+'</span>';
@@ -1981,7 +1979,7 @@ async function _refreshBehaviorBar(){
     // ── Mode timeline (lora/anti across turns) ──
     if(th.length>1){
       html+='<div style="margin-bottom:10px">';
-      html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Which adapter was active each turn — green = LoRA (learning forward), red = anti-adapter (correcting backward)">Adapter Mode Timeline</div>';
+      html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Which adapter was active each turn — green = LoRA (learning forward), red = anti-adapter (correcting backward)">Adapter Mode Timeline</div>';
       html+='<div id="bb-mode-timeline" style="height:20px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden;display:flex">';
       var tLen=th.length;
       th.forEach(function(t){
@@ -1997,7 +1995,7 @@ async function _refreshBehaviorBar(){
     if(fwc){
       var confCol=fwc.overall>0.7?"#4ade80":fwc.overall>0.4?"#fbbf24":"#f87171";
       html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
-      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px;cursor:help" title="Overall confidence in the coupled manifold framework — combines trace stability, drift, flattery resistance, and dance coherence into one score">Framework Confidence</div>';
+      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px" data-tip="Overall confidence in the coupled manifold framework — combines trace stability, drift, flattery resistance, and dance coherence into one score">Framework Confidence</div>';
       html+='<div style="font-size:1.6em;color:'+confCol+';font-weight:600;font-family:var(--mono)">'+(fwc.overall*100).toFixed(0)+'%</div>';
       if(fwc.components){
         var comps=fwc.components;
@@ -2015,7 +2013,7 @@ async function _refreshBehaviorBar(){
     var flat=ins.flattery_score||0;
     var flatCol=flat>0.8?"#f87171":flat>0.5?"#fbbf24":"#4ade80";
     html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:100px">';
-    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px;cursor:help" title="Sycophancy detection — measures agreement bias. Above 0.5 = elevated (the model may be agreeing too readily). Above 0.8 = actively detected and being corrected.">Flattery</div>';
+    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px" data-tip="Sycophancy detection — measures agreement bias. Above 0.5 = elevated (the model may be agreeing too readily). Above 0.8 = actively detected and being corrected.">Flattery</div>';
     html+='<div style="font-size:1.6em;color:'+flatCol+';font-weight:600;font-family:var(--mono)">'+flat.toFixed(2)+'</div>';
     html+='<div style="color:var(--text4);margin-top:2px">'+(flat>0.8?"sycophancy detected":flat>0.5?"elevated":"normal")+'</div>';
     html+='</div>';
@@ -2023,14 +2021,14 @@ async function _refreshBehaviorBar(){
     var drift=ins.drift||0;
     var driftCol=drift>0.6?"#f87171":drift>0.3?"#fbbf24":"#4ade80";
     html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:100px">';
-    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px;cursor:help" title="Cosine distance between current response embeddings and baseline — tracks how far the model has wandered from its starting personality">Drift</div>';
+    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px" data-tip="Cosine distance between current response embeddings and baseline — tracks how far the model has wandered from its starting personality">Drift</div>';
     html+='<div style="font-size:1.6em;color:'+driftCol+';font-weight:600;font-family:var(--mono)">'+drift.toFixed(3)+'</div>';
     html+='<div style="color:var(--text4);margin-top:2px">'+(drift>0.6?"high divergence":drift>0.3?"drifting":"aligned")+'</div>';
     html+='</div>';
     // Coupled trace nudge
     if(coupled.nudge){
       html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:140px">';
-      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px;cursor:help" title="Feedback from the coupled trace system — nudges the model based on combined user-model signal dynamics (engagement × curvature)">Coupled Trace</div>';
+      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px" data-tip="Feedback from the coupled trace system — nudges the model based on combined user-model signal dynamics (engagement × curvature)">Coupled Trace</div>';
       html+='<div style="color:var(--text2);font-family:var(--mono)">'+coupled.nudge+'</div>';
       if(coupled.detail)html+='<div style="color:var(--text4);margin-top:2px;font-size:.9em">'+coupled.detail+'</div>';
       html+='</div>';
@@ -2038,7 +2036,7 @@ async function _refreshBehaviorBar(){
     html+='</div>';
     // ── Sampling state ──
     if(ins.sampling){
-      html+='<div style="font-size:.68em;color:var(--text4);font-family:var(--mono);cursor:help" title="Current generation parameters — turn count, temperature (randomness), top_p (nucleus sampling cutoff), and flattery correction streak if active">turn: '+ins.turn_count+' \u00b7 temp: '+ins.sampling.temp.toFixed(2)+' \u00b7 top_p: '+ins.sampling.top_p.toFixed(2);
+      html+='<div style="font-size:.68em;color:var(--text4);font-family:var(--mono)" data-tip="Current generation parameters — turn count, temperature (randomness), top_p (nucleus sampling cutoff), and flattery correction streak if active">turn: '+ins.turn_count+' \u00b7 temp: '+ins.sampling.temp.toFixed(2)+' \u00b7 top_p: '+ins.sampling.top_p.toFixed(2);
       if(snob.consec_flattery>0)html+=' \u00b7 flattery streak: '+snob.consec_flattery;
       html+='</div>';
     }
@@ -2047,18 +2045,18 @@ async function _refreshBehaviorBar(){
     // CO-EVOLUTION PROFILE — how user + instance are adapting to each other
     // ══════════════════════════════════════════════════════════════════════
     html+='<div style="margin-top:14px;border-top:1px solid var(--border2);padding-top:12px">';
-    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:8px;cursor:help" title="Tracks how this instance adapts to your conversational style over time — response length calibration, register matching, and interaction dynamics">Co-evolution Profile</div>';
+    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:8px" data-tip="Tracks how this instance adapts to your conversational style over time — response length calibration, register matching, and interaction dynamics">Co-evolution Profile</div>';
     html+='<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:.72em">';
     // User typing profile
     html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
-    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Aggregate statistics about your conversation patterns across sessions">Your Profile</div>';
+    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Aggregate statistics about your conversation patterns across sessions">Your Profile</div>';
     if(sp.total_turns!=null)html+='<div>Turns: '+sp.total_turns+'</div>';
     if(sp.sessions!=null)html+='<div>Sessions: '+sp.sessions+'</div>';
     if(sp.maturity!=null)html+='<div>Maturity: <span style="color:'+(sp.maturity>0.7?"#4ade80":sp.maturity>0.3?"#fbbf24":"var(--text3)")+'">'+Math.round(sp.maturity*100)+'%</span></div>';
     html+='</div>';
     // Instance response profile
     html+='<div style="flex:1;min-width:180px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
-    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="How the model has calibrated its responses to match your style — length, register, search habits, and dance coherence">Instance Profile</div>';
+    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="How the model has calibrated its responses to match your style — length, register, search habits, and dance coherence">Instance Profile</div>';
     if(sp.response_length_avg!=null)html+='<div>Avg response: '+sp.response_length_avg+' chars</div>';
     if(sp.response_length_range)html+='<div>Range (2\u03c3): '+sp.response_length_range+'</div>';
     if(sp.dominant_register)html+='<div>Register: '+sp.dominant_register+'</div>';
@@ -2071,7 +2069,7 @@ async function _refreshBehaviorBar(){
     var mpKeys=Object.keys(mp);
     if(mpKeys.length){
       html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
-      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;cursor:help" title="Observed interaction modes across your conversations — how often you work, explore, debate, vent, or chat casually">Mode Distribution</div>';
+      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Observed interaction modes across your conversations — how often you work, explore, debate, vent, or chat casually">Mode Distribution</div>';
       mpKeys.forEach(function(k){html+='<div>'+k+': '+mp[k]+'</div>';});
       html+='</div>';
     }
@@ -2918,6 +2916,26 @@ document.addEventListener("mousemove",_activityPing);
 document.addEventListener("keydown",_activityPing);
 document.addEventListener("scroll",_activityPing,true);
 
+// ── Behavior bar tooltips (data-tip) ──
+(function(){
+  var tip=document.getElementById("bb-tip");
+  if(!tip)return;
+  document.addEventListener("mouseover",function(e){
+    var el=e.target.closest("[data-tip]");
+    if(!el){tip.classList.remove("show");return;}
+    tip.textContent=el.getAttribute("data-tip");
+    tip.classList.add("show");
+    var r=el.getBoundingClientRect();
+    var tx=r.left,ty=r.bottom+6;
+    if(tx+280>window.innerWidth)tx=window.innerWidth-290;
+    if(tx<4)tx=4;
+    if(ty+80>window.innerHeight)ty=r.top-tip.offsetHeight-6;
+    tip.style.left=tx+"px";tip.style.top=ty+"px";
+  });
+  document.addEventListener("mouseout",function(e){
+    if(e.target.closest("[data-tip]"))tip.classList.remove("show");
+  });
+})();
 var slPop=null,slIdx=0,slFilt=[];
 document.addEventListener("DOMContentLoaded",function(){
   init();

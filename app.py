@@ -4937,7 +4937,7 @@ plt.tight_layout()
     yield "", placeholder
 
     # Search — extract a clean query first (strip conversational wrapper)
-    def _extract_search_query(msg: str) -> str:
+    def _extract_search_query(msg: str, hist: list) -> str:
         if msg.startswith("/search "):
             return msg[8:].strip()
         # Strip leading filler phrases so we search the substance, not the request
@@ -4951,8 +4951,84 @@ plt.tight_layout()
         ).strip()
         # Also trim trailing question softeners
         q = _re.sub(r'[,\s]*(?:for me|please|thanks|thank you|right\?|correct\?)$', '', q, flags=_re.IGNORECASE).strip()
-        return q or msg
-    search_query = _extract_search_query(user_msg)
+        q = q or msg
+        # ── Context expansion: resolve vague/pronoun-heavy queries ──
+        # "how are they created?" + prior msg about synthetic datasets → "synthetic datasets virtual twins how are they created"
+        _PRONOUNS = {"they","them","it","its","this","that","these","those","he","she","his","her"}
+        _STOPS = {"the","a","an","of","in","on","for","and","or","with","to","by","is","are",
+                  "as","was","were","be","been","do","does","did","how","what","why","when",
+                  "where","which","who","whom","can","could","would","should","will","have",
+                  "has","had","not","but","if","so","just","also","very","really","about",
+                  "from","into","at","up","out","than","then","there","here","some","all",
+                  "each","any","no","my","your","we","i","you","me","us","our"}
+        _VERBS = {"want","need","know","think","like","tell","look","find","search",
+                  "check","make","get","see","say","try","use","go","come","take",
+                  "give","show","help","ask","work","call","run","keep","let","put",
+                  "set","seem","feel","play","leave","mean","end","begin","start",
+                  "turn","move","live","believe","happen","provide","include","continue",
+                  "change","lead","understand","watch","follow","stop","create","created",
+                  "talk","talked","talking","discuss","discussed","explore","exploring",
+                  "explain","explained","wonder","wondering","made","done","doing"}
+        # Filler/conversational words that leak from assistant responses
+        _FILLER = {"interesting","curious","aspect","question","yeah","sure","right",
+                   "okay","well","basically","actually","probably","maybe","perhaps",
+                   "really","quite","pretty","certainly","definitely","obviously",
+                   "apparently","honestly","literally","absolutely","exactly","simply",
+                   "sounds","looks","feels","seems","though","however","anyway",
+                   "specific","specifically","talking","mean","meant","something",
+                   "anything","everything","nothing","someone","everyone","most"}
+        _q_words = set(_re.sub(r'[^\w\s]', '', q).lower().split())
+        _has_pronoun = bool(_q_words & _PRONOUNS)
+        _content_words = _q_words - _STOPS - _PRONOUNS - _VERBS - _FILLER
+        _is_vague = _has_pronoun or len(_content_words) < 2
+        if _is_vague and hist:
+            # Pull topic nouns from recent messages — prefer user messages
+            _topic_words = []
+            _seen_tw = set()
+            # First pass: user messages only (most reliable topic source)
+            for _hm in reversed(hist[-10:]):
+                if _hm.get("role") != "user":
+                    continue
+                _hc = str(_hm.get("content", "") or "").strip()
+                if not _hc or _hc.startswith("/") or _hc == msg:
+                    continue
+                for _w in _hc.split():
+                    _wl = _re.sub(r'[^\w]', '', _w).lower()
+                    if (_wl and len(_wl) > 3
+                            and _wl not in _STOPS and _wl not in _PRONOUNS
+                            and _wl not in _VERBS and _wl not in _FILLER
+                            and _wl not in _seen_tw):
+                        _seen_tw.add(_wl)
+                        _topic_words.append(_wl)
+                if len(_topic_words) >= 5:
+                    break
+            # Second pass: assistant messages if user didn't have enough
+            if len(_topic_words) < 3:
+                for _hm in reversed(hist[-10:]):
+                    if _hm.get("role") != "assistant":
+                        continue
+                    _hc = str(_hm.get("content", "") or "").strip()
+                    if not _hc or _hc.startswith("*"):
+                        continue
+                    for _w in _hc.split():
+                        _wl = _re.sub(r'[^\w]', '', _w).lower()
+                        if (_wl and len(_wl) > 3
+                                and _wl not in _STOPS and _wl not in _PRONOUNS
+                                and _wl not in _VERBS and _wl not in _FILLER
+                                and _wl not in _seen_tw):
+                            _seen_tw.add(_wl)
+                            _topic_words.append(_wl)
+                    if len(_topic_words) >= 5:
+                        break
+            if _topic_words:
+                # Build a focused query: topic nouns + the action from the original
+                _action = _re.sub(r'\b(' + '|'.join(_PRONOUNS) + r')\b', '', q, flags=_re.IGNORECASE).strip()
+                _action = _re.sub(r'\s+', ' ', _action).strip()
+                _topic_prefix = " ".join(_topic_words[:4])
+                q = f"{_topic_prefix} {_action}" if _action else _topic_prefix
+                print(f"[SEARCH] expanded vague query → {q!r}", flush=True)
+        return q
+    search_query = _extract_search_query(user_msg, history)
     web_context = ""
     _search_sources: list = []
     _last_web_query: str = ""
