@@ -843,7 +843,7 @@ class LayeredHistory:
         cap = max_turns if max_turns is not None else self.window
         msgs = []
 
-        # System anchor
+        # System anchor — single system message (Gemma 3 requires strict alternation)
         system_parts = [
             "You are a local AI assistant called Coupled Manifold.",
             "You are NOT the user. You are NOT Ian Preston-Campbell.",
@@ -854,7 +854,6 @@ class LayeredHistory:
         if self.summaries and cap >= 8:
             summary_block = "\n".join(self.summaries[-2:])
             system_parts.append(f"\n[CONVERSATION HISTORY SUMMARY]\n{summary_block}")
-        msgs.append({"role": "system", "content": " ".join(system_parts)})
 
         # Semantic recall from full archive (if query provided and index populated)
         # Retrieves from ALL history — current session AND past sessions —
@@ -868,20 +867,17 @@ class LayeredHistory:
                                    if t.get("ts", 0) >= self._session_start_ts]
                 prior_sessions  = [t for t in recalled
                                    if t.get("ts", 0) < self._session_start_ts]
-                # Current session recall
+                # Current session recall — fold into system_parts
                 if current_session:
                     lines = []
                     for t in current_session:
                         label = "Ian" if t["role"] == "user" else "Assistant"
                         lines.append(f"{label}: {t['content'][:300]}")
-                    msgs.append({
-                        "role": "system",
-                        "content": (
-                            "[RECALLED — from earlier in this conversation]\n"
-                            + "\n".join(lines)
-                            + "\n[Use this for context. Do not repeat it verbatim.]"
-                        )
-                    })
+                    system_parts.append(
+                        "\n[RECALLED — from earlier in this conversation]\n"
+                        + "\n".join(lines)
+                        + "\n[Use this for context. Do not repeat it verbatim.]"
+                    )
                 # Cross-session recall — cap to 4 turns, shorter content, with timestamps
                 if prior_sessions:
                     from datetime import datetime as _dt
@@ -891,14 +887,13 @@ class LayeredHistory:
                         ts = t.get("ts", 0)
                         when = _dt.fromtimestamp(ts).strftime("%b %d, %I:%M%p") if ts else "unknown"
                         lines.append(f"[{when}] {label}: {t['content'][:200]}")
-                    msgs.append({
-                        "role": "system",
-                        "content": (
-                            "[RECALLED — from a previous session]\n"
-                            + "\n".join(lines)
-                            + "\n[Reference only if directly relevant to what the user is asking now.]"
-                        )
-                    })
+                    system_parts.append(
+                        "\n[RECALLED — from a previous session]\n"
+                        + "\n".join(lines)
+                        + "\n[Reference only if directly relevant to what the user is asking now.]"
+                    )
+
+        msgs.append({"role": "system", "content": "\n".join(system_parts)})
 
         # Recent turns — always included for immediate coherence
         # Cap assistant messages to prevent model's own verbose responses

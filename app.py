@@ -5382,11 +5382,16 @@ plt.tight_layout()
                     }
                     break
 
-        # Normalize: chat templates require alternating user/assistant — collapse consecutive same-role msgs
+        # Normalize: Gemma 3 requires strict alternating user/assistant — merge consecutive same-role msgs
         _norm = []
         for _m in _cur_messages:
             if _m.get("role") == "system":
-                _norm.append(_m)
+                # Merge consecutive system messages into one
+                if _norm and _norm[-1].get("role") == "system":
+                    _norm[-1] = {"role": "system",
+                                 "content": _norm[-1]["content"] + "\n\n" + _m.get("content", "")}
+                else:
+                    _norm.append(_m)
             elif _norm and _norm[-1].get("role") == _m.get("role") == "user":
                 _norm[-1] = _m  # keep latest user message if stacked
             elif _norm and _norm[-1].get("role") == _m.get("role") == "assistant":
@@ -5402,15 +5407,24 @@ plt.tight_layout()
                 _cur_messages, tokenize=False, add_generation_prompt=True
             )
         except Exception as _tmpl_err:
-            print(f"[CHAT] chat template failed, using Qwen fallback: {_tmpl_err}", file=sys.stderr, flush=True)
-            # Fallback: Qwen-style im_start/im_end tokens — handles multi-line content
-            # and avoids false-positive role detection on `:` in content.
-            _role_map = {"system": "system", "user": "user", "assistant": "assistant"}
-            prompt = ""
+            print(f"[CHAT] chat template failed, using Gemma fallback: {_tmpl_err}", file=sys.stderr, flush=True)
+            # Fallback: Gemma 3 native format — <start_of_turn>role\ncontent<end_of_turn>
+            # System messages get folded into the first user turn (Gemma 3 has no system role)
+            _role_map = {"user": "user", "assistant": "model"}
+            prompt = "<bos>"
+            _sys_prefix = ""
             for _fm in _cur_messages:
-                _fr = _role_map.get(_fm.get("role", "user"), "user")
-                prompt += f"<|im_start|>{_fr}\n{_fm.get('content','')}<|im_end|>\n"
-            prompt += "<|im_start|>assistant\n"
+                _fr = _fm.get("role", "user")
+                _fc = _fm.get("content", "")
+                if _fr == "system":
+                    _sys_prefix += _fc + "\n\n"
+                else:
+                    _gr = _role_map.get(_fr, "user")
+                    if _sys_prefix and _gr == "user":
+                        _fc = _sys_prefix + _fc
+                        _sys_prefix = ""
+                    prompt += f"<start_of_turn>{_gr}\n{_fc}<end_of_turn>\n"
+            prompt += "<start_of_turn>model\n"
 
         _stream_kwargs = dict(
             max_tokens=_max_new,
