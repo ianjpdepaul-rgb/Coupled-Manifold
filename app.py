@@ -959,12 +959,20 @@ def load_latest_checkpoint():
         return
 
     print(f"  Resuming weights from {latest}")
+    _skipped = 0
     with _model_lock:
         for path, adapter in _iter_named_adapters(model):
             for pname in ('lA', 'lB', 'aA', 'aB'):
                 key = f"{path}.{pname}"
                 if key in state:
-                    setattr(adapter, pname, mx.array(state[key]))
+                    _cur = getattr(adapter, pname)
+                    _new = state[key]
+                    if _cur.shape != _new.shape:
+                        _skipped += 1
+                        continue  # shape mismatch — different model, skip
+                    setattr(adapter, pname, mx.array(_new))
+    if _skipped:
+        print(f"  ⚠  Skipped {_skipped} adapter weights (shape mismatch — old model checkpoint)")
 
     snob_path = f"{ckpt_dir}/{latest.replace('.npz', '_snob.json')}"
     if os.path.exists(snob_path):
@@ -1381,8 +1389,8 @@ def fuse_session_weights():
             cumulative = _read_npz_weights(_CUMULATIVE_PATH)
             alpha  = 0.1
             merged = {k: (1-alpha)*cumulative[k] + alpha*current[k]
-                      for k in current if k in cumulative}
-            merged.update({k: v for k, v in current.items() if k not in cumulative})
+                      for k in current if k in cumulative and cumulative[k].shape == current[k].shape}
+            merged.update({k: v for k, v in current.items() if k not in cumulative or cumulative.get(k, v).shape != v.shape})
         except Exception:
             merged = current
     else:
@@ -1410,8 +1418,8 @@ def fuse_session_weights_for(target_model, path: str):
             cumulative = _read_npz_weights(path)
             alpha  = 0.1
             merged = {k: (1-alpha)*cumulative[k] + alpha*current[k]
-                      for k in current if k in cumulative}
-            merged.update({k: v for k, v in current.items() if k not in cumulative})
+                      for k in current if k in cumulative and cumulative[k].shape == current[k].shape}
+            merged.update({k: v for k, v in current.items() if k not in cumulative or cumulative.get(k, v).shape != v.shape})
         except Exception:
             merged = current
     else:
@@ -1423,12 +1431,21 @@ def fuse_session_weights_for(target_model, path: str):
 def load_cumulative_weights():
     if os.path.exists(_CUMULATIVE_PATH):
         state = _read_npz_weights(_CUMULATIVE_PATH)
+        _skipped = 0
         for path, adapter in _iter_named_adapters(model):
             for pname in ('lA', 'lB', 'aA', 'aB'):
                 key = f"{path}.{pname}"
                 if key in state:
-                    setattr(adapter, pname, mx.array(state[key]))
-        print(f"  🔗 Cumulative adapter loaded")
+                    _cur = getattr(adapter, pname)
+                    _new = state[key]
+                    if _cur.shape != _new.shape:
+                        _skipped += 1
+                        continue  # shape mismatch — different model, skip
+                    setattr(adapter, pname, mx.array(_new))
+        if _skipped:
+            print(f"  ⚠  Cumulative adapter skipped ({_skipped} shape mismatches — old model)")
+        else:
+            print(f"  🔗 Cumulative adapter loaded")
 
 
 def check_adapter_health_and_rollback(target_model=None, label: str = ""):
