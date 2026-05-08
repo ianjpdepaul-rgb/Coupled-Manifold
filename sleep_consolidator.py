@@ -40,7 +40,7 @@ from typing import Optional
 
 _STOP_WORDS = {
     # ── Core English stopwords ────────────────────────────────
-    "the", "and", "is", "in", "to", "of", "it", "that", "this",
+    "the", "and", "is", "in", "to", "of", "it", "that", "this", "non",
     "for", "was", "are", "with", "on", "as", "at", "be", "have",
     "from", "or", "an", "but", "not", "you", "all", "can", "had",
     "her", "his", "one", "our", "out", "they", "been", "has",
@@ -288,7 +288,18 @@ def _make_dream(digest: str, topic_words: list[str]) -> str:
         "instead", "besides", "therefore", "thus", "hence", "meanwhile",
     }
     clean = [w for w in topic_words if w not in _junk and len(w) > 2]
-    themes = clean[:4] if clean else ["the conversation"]
+    # Dedup morphological variants (bottle/bottles, market/marketing)
+    # Keep the shorter stem if both forms appear
+    _seen_stems: set = set()
+    _deduped: list = []
+    for w in clean:
+        _stem = w.rstrip("s") if w.endswith("s") and len(w) > 4 else w
+        _stem = _stem[:-3] if _stem.endswith("ing") and len(_stem) > 5 else _stem
+        _stem = _stem[:-2] if _stem.endswith("ed") and len(_stem) > 4 else _stem
+        if _stem not in _seen_stems:
+            _seen_stems.add(_stem)
+            _deduped.append(w)
+    themes = _deduped[:4] if _deduped else ["the conversation"]
     return "dreaming about: " + ", ".join(themes)
 
 
@@ -609,7 +620,20 @@ class SleepConsolidator:
             for w in words:
                 if w not in stop and len(w) > 2:
                     freq[w] = freq.get(w, 0) + 1
-            self._topic_words = sorted(freq, key=freq.get, reverse=True)[:20]
+            # Merge morphological variants: bottles→bottle, marketing→market
+            _merged: dict = {}
+            _canon: dict = {}   # stem → canonical surface form
+            for w, c in freq.items():
+                _s = w.rstrip("s") if w.endswith("s") and len(w) > 4 else w
+                _s = _s[:-3] if _s.endswith("ing") and len(_s) > 5 else _s
+                _s = _s[:-2] if _s.endswith("ed") and len(_s) > 4 else _s
+                _merged[_s] = _merged.get(_s, 0) + c
+                # Keep the shorter form as canonical (bottle not bottles)
+                if _s not in _canon or len(w) < len(_canon[_s]):
+                    _canon[_s] = w
+            # Sort by merged count, surface the canonical form
+            _by_count = sorted(_merged.items(), key=lambda x: x[1], reverse=True)
+            self._topic_words = [_canon[stem] for stem, _ in _by_count][:20]
 
             # 4. Extractive summary
             extractive = extractive_summary(recent, self._topic_words, sentences_per_turn=2)

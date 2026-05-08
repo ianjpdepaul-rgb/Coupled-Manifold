@@ -501,8 +501,7 @@ def _compute_trace_mlx(target_model, tokens_np):
 
     The Colab experimental version (SharingAToy.ipynb) uses exact autograd HVP
     via torch.autograd.functional.hvp. This central-difference approximation
-    agrees within ~1-5% for well-conditioned adapters. Validation TBD — the
-    exact version is preserved as _compute_trace_mlx_exact below.
+    agrees within ~1-5% for well-conditioned adapters.
 
     Gradients are scoped to adapter lA/lB params only (~168 tensors), not the
     full model (~1745 trainable tensors). This matches the Colab precedent.
@@ -661,92 +660,6 @@ def _compute_trace_mlx(target_model, tokens_np):
             a.anti_on = s_a
 
 
-def _compute_trace_mlx_exact(target_model, tokens_np):
-    """
-    Exact Hutchinson Hessian trace via nested autograd HVP — REFERENCE ONLY.
-
-    This is the theoretically correct version using nn.value_and_grad nested
-    inside nn.value_and_grad for exact second-order derivatives. It matches the
-    Colab experimental version (SharingAToy.ipynb) which uses
-    torch.autograd.functional.hvp.
-
-    On Apple Silicon MLX, this hangs because the nested backward pass runs the
-    full 1.6B-param forward graph twice per HVP probe. Use _compute_trace_mlx
-    (central-difference approximation) for deployment.
-
-    Kept as dead code for future validation: run both on the same input to
-    measure approximation error and establish tolerance bounds.
-    """
-    adapters = _get_adapters(target_model)
-    if not adapters:
-        return None
-
-    n = len(adapters)
-    k = min(TRACE_LAYERS, n)
-    weight = np.array([(i + 1) / n for i in range(n)], dtype=np.float64)
-    weight = weight / weight.sum()
-    weight[-1] += 1.0 - weight.sum()
-    indices = list(np.random.choice(n, size=k, replace=False, p=weight))
-    subset  = [adapters[i] for i in indices]
-
-    _saved_lora = [a.lora_on for a in adapters]
-    _saved_anti = [a.anti_on for a in adapters]
-    for a in adapters:
-        a.lora_on = False; a.anti_on = False
-    for a in subset:
-        a.lora_on = True
-
-    target_model.freeze()
-    for a in subset:
-        a.unfreeze(keys=["lA", "lB"])
-
-    tokens = mx.array(tokens_np.reshape(1, -1)[:, :TRACE_CTX])
-
-    def loss_fn(m):
-        lm = m.language_model
-        out = lm(tokens)
-        logits = out.logits if hasattr(out, 'logits') else out
-        shift  = logits[:, :-1, :]
-        tgt    = tokens[:, 1:]
-        return nn.losses.cross_entropy(
-            shift.reshape(-1, shift.shape[-1]), tgt.reshape(-1)
-        ).mean()
-
-    try:
-        _, grads = nn.value_and_grad(target_model, loss_fn)(target_model)
-        mx.eval(grads)
-        flat_g = {k: v for k, v in mlx_utils.tree_flatten(grads) if v is not None}
-        if not flat_g:
-            return None
-
-        vs = {k: mx.array(np.random.choice([-1.0, 1.0], g.shape).astype(np.float32))
-              for k, g in flat_g.items()}
-
-        def gv_fn(m):
-            _, g = nn.value_and_grad(m, loss_fn)(m)
-            fg = {k: v for k, v in mlx_utils.tree_flatten(g) if v is not None}
-            return sum(mx.sum(fg[k] * vs[k]) for k in vs if k in fg)
-
-        _, hvp = nn.value_and_grad(target_model, gv_fn)(target_model)
-        mx.eval(hvp)
-        flat_h = {k: v for k, v in mlx_utils.tree_flatten(hvp) if v is not None}
-
-        raw   = sum(float(mx.sum(vs[k] * flat_h[k])) for k in vs if k in flat_h)
-        trace = raw * (n / k)
-        result = float(trace)
-        if np.isnan(result) or np.isinf(result):
-            return None
-        return result
-    except Exception as e:
-        print(f"  [trace_exact failed: {e}]")
-        return None
-    finally:
-        for a, s_l, s_a in zip(adapters, _saved_lora, _saved_anti):
-            a.lora_on = s_l
-            a.anti_on = s_a
-        for a in adapters:
-            a.unfreeze()
-
 
 def _adapters_are_cold(target_model, threshold=1e-5):
     """Check if all adapter lB matrices are near-zero (fresh init / wiped checkpoint)."""
@@ -849,16 +762,6 @@ def set_mode(mode, target_model=None):
         mod.lora_on = lora_on
         mod.anti_on = anti_on
 
-def strip_medulla(content):
-    if not isinstance(content, str):
-        return str(content)
-    if "<!--MED-->" in content:
-        content = content[:content.index("<!--MED-->")]
-    if "<div style=" in content:
-        content = content.split("\n\n<div style=")[0]
-    # Strip inline drift badges too
-    content = re.sub(r"<span style='[^']*'>⚡[^<]*</span>", "", content)
-    return content.strip()
 
 def extract_text(msg):
     """Safely extract plain string from any Gradio message format."""
@@ -990,11 +893,6 @@ def load_latest_checkpoint():
             ctrl.log        = s.get("log", [])
             ctrl.mode       = s.get("mode", "lora")
 
-def save_history(history):
-    pass  # delegated to mem
-
-def load_history():
-    return mem.get_history_messages()
 
 # ═══════════════════════════════════════════════════
 # LOAD MODEL
@@ -1408,22 +1306,6 @@ def _collect_adapter_weights(target_model):
     return out
 
 
-def fuse_session_weights():
-    current = _collect_adapter_weights(model)
-    if os.path.exists(_CUMULATIVE_PATH):
-        try:
-            cumulative = _read_npz_weights(_CUMULATIVE_PATH)
-            alpha  = 0.1
-            merged = {k: (1-alpha)*cumulative[k] + alpha*current[k]
-                      for k in current if k in cumulative and cumulative[k].shape == current[k].shape}
-            merged.update({k: v for k, v in current.items() if k not in cumulative or cumulative.get(k, v).shape != v.shape})
-        except Exception:
-            merged = current
-    else:
-        merged = current
-    _write_npz_weights(_CUMULATIVE_PATH, merged)
-    print(f"  🔗 Session weights fused")
-
 
 def fuse_session_weights_for(target_model, path: str):
     """Fuse adapter weights for a specific model into its cumulative path."""
@@ -1690,10 +1572,20 @@ def build_interoceptive_block():
         flattery = "high — geometry locked, tracking user register. introduce friction."
     cumulative_str = "compounding across sessions" if os.path.exists(_CUMULATIVE_PATH) else "this session only"
     notes = []
-    if flattery != "none": notes.append(f"Flattery risk: {flattery}")
-    if patho>=1:           notes.append("Pathological convergence. Widen search.")
-    if drift>0.6:          notes.append("High drift from user register. Reorient.")
-    if momentum=="collapsing": notes.append("Geometry collapsing. Raise temperature internally.")
+    # Concrete behavioural directives — 12B models need explicit instructions,
+    # not abstract labels like "Reorient" or "Introduce friction"
+    if flattery != "none":
+        notes.append(f"Flattery risk: {flattery}")
+        notes.append("ACTION: disagree with something, ask a hard question, or say 'I'm not sure that's right'")
+    if patho>=1:
+        notes.append("Pathological convergence — stuck in a rut.")
+        notes.append("ACTION: change your sentence structure, bring up something the user hasn't mentioned, avoid repeating their words back")
+    if drift>0.6:
+        notes.append(f"High drift ({drift_s}) — you are wandering from what the user actually asked about.")
+        notes.append("ACTION: re-read the user's last message, answer THAT question directly, do not introduce new topics")
+    if momentum=="collapsing":
+        notes.append("Geometry collapsing — responses getting predictable.")
+        notes.append("ACTION: take a different angle, use a metaphor, or ask what the user actually wants to explore")
     _steer, _steer_txt = should_suggest_redirect()
     if _steer:             notes.append(_steer_txt)
     # Non-convergence check (Task 5) — surface when dance doesn't settle
@@ -1772,14 +1664,18 @@ def build_interoceptive_block():
     _is_early = turn_count[0] <= 2
     _failure_modes = ""
     _instructions = ""
+    _has_active_warning = any([
+        flattery != "none", patho >= 1, drift > 0.6, momentum == "collapsing"
+    ])
     if _is_early:
         _failure_modes = (
             "\n[FAILURE MODES] Flattery: low trace+low drift+no switches=locked on approval. "
             "Attractor: sustained low trace below detection."
         )
+    if _is_early or _has_active_warning:
         _instructions = (
-            "\nInstruction: if flattery elevated, introduce friction. "
-            "Thresholds adjustable via <tool:adjust_thresholds>."
+            "\nInstruction: if flattery elevated, introduce friction — push back on the user, "
+            "do not just agree. Thresholds adjustable via <tool:adjust_thresholds>."
         )
 
     # Temporal context — P2.5 (between apparatus and system profile)
@@ -1949,7 +1845,7 @@ def build_interoceptive_block():
     # Assemble with priority dropping
     _end = "\n[END INTEROCEPTIVE STATE]"
     # Increase ceiling to accommodate new signals
-    _INTERO_CEILING = 2200
+    _INTERO_CEILING = 2600
     # Start with everything, drop lowest priority first
     _sections = [
         (6, _failure_modes),
@@ -5126,7 +5022,14 @@ plt.tight_layout()
         "go on", "continue", "keep going", "more", "keep writing",
         "finish", "next", "and then", "what else", "carry on",
         "don't stop", "dont stop", "elaborate", "expand",
+        "now what", "then what", "and?", "so?", "yeah?",
+        "keep it going", "lets keep", "let's keep",
     ])
+    # Short prompt after a long response = implicit continuation
+    if not _is_continuation and len(user_msg.split()) <= 5 and session_log:
+        _prev_len = len(session_log[-1].get("response", ""))
+        if _prev_len > 800:
+            _is_continuation = True
 
     # Identity-relevant queries need the full block (raw_notes, not compact)
     if any(w in _q_low for w in ["about me", "you know", "remember", "told you", "my ", "i am", "who am i"]):
@@ -5643,78 +5546,15 @@ plt.tight_layout()
 
     _last_sampling[0] = temp; _last_sampling[1] = top_p_val  # cache for apparatus block
 
-    # Adaptive think budget — simple queries don't need deep CoT
-    if think_mode[0]:
-        _wc_think = len(user_msg.split())
-        _complex_signals = any(x in user_msg.lower() for x in [
-            "explain", "why", "how", "compare", "analyze", "prove", "derive",
-            "step by step", "detail", "reason", "because", "critique", "argue",
-            "essay", "write", "code", "function", "implement", "algorithm",
-        ])
-        if _is_code_request:
-            _max_new = max(think_budget[0], MAX_NEW)  # code needs full budget even in think mode
-        elif _wc_think <= 8 and not _complex_signals:
-            _max_new = min(think_budget[0], 150)   # brief response for simple turns
-        elif not _complex_signals and _wc_think <= 20:
-            _max_new = min(think_budget[0], 300)   # medium
-        else:
-            _max_new = think_budget[0]             # full budget for complex
-    else:
-        _max_new = MAX_NEW
-    # Tiered token budget — generate only as much as the query needs
-    if not think_mode[0]:
-        _wc = len(user_msg.split())
-        _has_q = "?" in user_msg
-        _uncertain = any(x in user_msg.lower() for x in [
-            "not sure", "confused", "what do you mean", "clarif",
-            "explain more", "elaborate", "don't understand", "dont understand",
-        ])
-        try:
-            from model_router import route_query as _rq
-            _route = _rq(user_msg)
-        except Exception:
-            _route = "large" if _wc > 20 else "small"
-
-        # Detect continuation signals — user wants the model to keep going
-        _continuation = any(x in user_msg.lower() for x in [
-            "go on", "continue", "keep going", "more", "keep writing",
-            "finish", "next", "and then", "what else", "carry on",
-            "don't stop", "dont stop", "elaborate", "expand",
-        ])
-        if _is_code_request:
-            _max_new = MAX_NEW  # code always gets full budget — never truncate mid-block
-        elif _continuation:
-            _max_new = MAX_NEW  # continuation gets full budget — don't choke mid-paper
-        elif _has_q or _uncertain:
-            # User is asking or uncertain — give a full medium budget
-            _max_new = MAX_NEW if _route == "large" else 512
-        elif _route == "small" and _wc <= 3:
-            _max_new = 200    # greeting or one-liner (was 120 — too tight)
-        elif _route == "small":
-            _max_new = 512   # simple factual / short follow-up (was 350)
-        else:
-            _max_new = MAX_NEW  # complex — full budget
-
-    # Auto-detect long-form intent even in M mode
-    _long_signals = any(x in user_msg.lower() for x in [
-        "write a paper", "write an essay", "in depth", "in detail",
-        "full analysis", "comprehensive", "elaborate on", "expand on",
-        "tell me everything", "long form", "thorough", "explain at length",
-        "walk me through", "break down", "deep dive",
-    ])
-    if _long_signals and _response_length[0] != "S":
-        _max_new = max(_max_new, 4096)
-
-    # Response length override — applies regardless of think mode
+    # Output budget: always MAX_NEW. Model stops via EOS when it's done.
+    _max_new = MAX_NEW
+    # ── Output token budget — always MAX_NEW ──────────────────────────────
+    # The model stops naturally via EOS when it's done. Artificial caps only
+    # cause mid-sentence truncation. Memory pressure gates (11GB/12GB below)
+    # handle the actual OOM risk dynamically. Only "S" mode (user's explicit
+    # choice) caps output.
     if _response_length[0] == "S":
-        _max_new = min(_max_new, 250)  # S caps output, doesn't expand it
-    elif _response_length[0] == "L":
-        # L is a ceiling, not a floor — only expand substantive queries
-        if _max_new >= 350:  # tiered routing thinks this is a real question
-            _max_new = max(_max_new, 4096)
-        # else: greeting/one-liner stays short even in L mode
-    if _is_code_request:
-        _max_new = max(_max_new, MAX_NEW)
+        _max_new = min(_max_new, 250)
 
     # ── Tool dispatch state ──────────────────────────────────────
     _tool_calls_this_turn = 0
@@ -6175,6 +6015,43 @@ plt.tight_layout()
             for _mod in _get_adapters(model_active):
                 _mod.a_str = _anti_str
     _drift_quick = compute_drift(response)
+
+    # ── Self-correction trigger — CUMULATIVE drift check ──────────────────
+    # Drift is a cumulative event: we don't fire on a single spike (that's
+    # just a topic change).  Instead, check recent trajectory — sustained
+    # proximity to the threshold means the model has genuinely wandered.
+    #
+    # Fire when:
+    #   (a) current drift > 0.6 AND the 3-turn moving average is also > 0.5
+    #       (single spike + recent trend confirms it's not a one-off), OR
+    #   (b) 3-turn average alone > 0.6 (sustained drift even if this turn
+    #       dipped slightly — the cumulative picture is what matters)
+    _recent_drifts = [
+        h["drift"] for h in trace_history_live[-3:]
+        if h.get("drift") is not None and h["drift"] >= 0
+    ]
+    _recent_drifts.append(_drift_quick)   # include current turn so recovery pulls avg down
+    _drift_avg = sum(_recent_drifts) / len(_recent_drifts)
+    _drift_cumulative_fire = (
+        (_drift_quick > 0.6 and _drift_avg > 0.5) or   # spike + warm trajectory
+        (_drift_avg > 0.6)                               # sustained drift
+    )
+    if _drift_cumulative_fire and len(response.split()) > 20:
+        try:
+            _corrected = _self_correct(response, user_msg, _cur_messages,
+                                        model_ref=model_active, tok_ref=tok_active)
+            if _corrected != response:
+                _drift_corrected = compute_drift(_corrected)
+                # Only accept correction if it actually reduces drift
+                if _drift_corrected < _drift_quick:
+                    print(f"  ✎ Self-correction fired: drift {_drift_quick:.2f} → {_drift_corrected:.2f} (avg {_drift_avg:.2f})", flush=True)
+                    response = _corrected
+                    _drift_quick = _drift_corrected
+                else:
+                    print(f"  ✎ Self-correction rejected: correction drift {_drift_corrected:.2f} >= original {_drift_quick:.2f}", flush=True)
+        except Exception as _sc_err:
+            print(f"  ✎ Self-correction error: {_sc_err}", flush=True)
+
     trace_history_live.append({"turn": turn_count[0],
                                 "trace": round(trace, 1) if _trace_valid(trace) else None,
                                 "mode": mode, "model": model_label,
