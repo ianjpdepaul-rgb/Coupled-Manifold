@@ -6,7 +6,7 @@ A private, local AI companion that runs entirely on your Mac. No internet requir
 
 ## What it is
 
-Graceful runs a small language model (Gemma 4 E4B, 4-bit quantized) directly on your Apple Silicon chip using MLX — Apple's native machine learning framework. It is fast, private, and fully offline after the one-time setup.
+Graceful runs a small language model (Gemma 3 12B, 4-bit quantized) directly on your Apple Silicon chip using MLX — Apple's native machine learning framework. It is fast, private, and fully offline after the one-time setup.
 
 Underneath the chat interface, the system measures the curvature of its own reasoning in real time — a number called the Hessian trace. When the geometry of the model's attention drifts toward narrow, repetitive patterns, the system detects it and adapts. You are not just talking to a model; the model is monitoring itself as it talks to you.
 
@@ -19,7 +19,7 @@ This is a research deployment of the Coupled Manifold Safety Framework.
 - **Mac with Apple Silicon** (M1, M2, M3, or M4) — required for MLX
 - **Python 3.9 or later** — get it at [python.org](https://python.org)
 - **~6 GB RAM** available during use
-- **~5 GB free disk space** for the model (one-time download)
+- **~7 GB free disk space** for the model (one-time download)
 - **No HuggingFace account required** — the model is public
 
 ---
@@ -38,10 +38,10 @@ The script will:
 2. Install Homebrew dependencies (if needed)
 3. Create an isolated Python environment
 4. Install all required libraries
-5. Download the Gemma 4 E4B model (~4 GB, one time only)
+5. Download the Gemma 3 12B model (~7 GB, one time only)
 6. Build `Graceful.app` with the correct icon
 
-**No HuggingFace token is needed.** The model (`mlx-community/gemma-4-e4b-it-4bit`) is publicly available. You can press Enter to skip the token prompt.
+**No HuggingFace token is needed.** The model (`mlx-community/gemma-3-12b-it-4bit`) is publicly available. You can press Enter to skip the token prompt.
 
 ---
 
@@ -148,7 +148,7 @@ Then try opening it again.
 
 **"Python 3 not found"** — Install via Homebrew: `brew install python@3.11`. If you don't have Homebrew, install it first from [brew.sh](https://brew.sh), or download Python from [python.org](https://python.org) and re-run `setup.sh`.
 
-**Model download fails** — Check your internet connection. The model is ~4 GB and downloads from HuggingFace. No token is required.
+**Model download fails** — Check your internet connection. The model is ~7 GB and downloads from HuggingFace. No token is required.
 
 **App opens but browser stays blank** — Wait 10–15 seconds for the server to start, then refresh the page.
 
@@ -190,4 +190,4 @@ This application is a deployment of the Coupled Manifold Safety Framework. The t
 ---
 
 *MIT License — Ian J. Preston-Campbell (Ian De Paul), 2026*  
-*Model: Gemma 4 E4B by Google DeepMind — subject to [Gemma Terms of Use](https://ai.google.dev/gemma/terms)*
+*Model: Gemma 3 12B by Google DeepMind — subject to [Gemma Terms of Use](https://ai.google.dev/gemma/terms)*
