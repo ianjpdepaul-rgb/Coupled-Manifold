@@ -35,6 +35,85 @@ from typing import Optional
 
 
 # ═══════════════════════════════════════════════════════════════
+# SHARED STOP WORDS — used across extractive summary & consolidation
+# ═══════════════════════════════════════════════════════════════
+
+_STOP_WORDS = {
+    # ── Core English stopwords ────────────────────────────────
+    "the", "and", "is", "in", "to", "of", "it", "that", "this",
+    "for", "was", "are", "with", "on", "as", "at", "be", "have",
+    "from", "or", "an", "but", "not", "you", "all", "can", "had",
+    "her", "his", "one", "our", "out", "they", "been", "has",
+    "its", "just", "like", "more", "about", "would", "what", "your",
+    "some", "them", "than", "other", "into", "could", "time", "very",
+    "when", "come", "made", "after", "back", "only", "me", "my", "do",
+    "did", "does", "done", "get", "got", "goes", "going", "gone",
+    "him", "how", "may", "new", "now", "old", "see", "saw", "way",
+    "who", "why", "let", "say", "said", "she", "too", "use", "used",
+    "yes", "no", "here", "there", "then", "also", "each", "make",
+    "much", "most", "give", "gave", "take", "took", "want", "wanted",
+    "know", "knew", "tell", "told", "think", "thought", "thing", "things",
+    "will", "well", "were", "been", "being", "which", "their", "these",
+    "those", "such", "same", "still", "while", "where", "until",
+    "both", "few", "many", "own", "any", "every", "even", "over",
+    "under", "again", "once", "twice", "first", "last", "next",
+    "shall", "should", "might", "must", "need", "keep", "kept",
+    "put", "set", "try", "tried", "seem", "seemed", "show", "shown",
+    "turn", "turned", "work", "worked", "find", "found", "feel", "felt",
+    "look", "looked", "run", "ran", "call", "called", "ask", "asked",
+    "long", "part", "since", "before", "between", "through", "during",
+    "without", "within", "along", "around", "above", "below", "toward",
+    "upon", "across", "against", "among", "behind", "beside", "beyond",
+    # ── Pronouns & determiners ────────────────────────────────
+    "itself", "myself", "yourself", "himself", "herself", "themselves",
+    "ourselves", "someone", "something", "somewhere", "anyone", "anything",
+    "anywhere", "everyone", "everything", "everywhere", "nothing",
+    "nobody", "none", "another", "either", "neither", "whatever",
+    "whoever", "wherever", "whenever", "however", "whichever",
+    # ── Filler / hedge / discourse words ──────────────────────
+    "actually", "basically", "honestly", "literally", "really", "pretty",
+    "quite", "rather", "somewhat", "anyway", "anyhow", "anyways",
+    "maybe", "perhaps", "probably", "possibly", "certainly", "definitely",
+    "obviously", "apparently", "supposedly", "essentially", "technically",
+    "specifically", "particularly", "generally", "usually", "often",
+    "sometimes", "always", "never", "already", "almost", "enough",
+    "especially", "exactly", "simply", "merely", "slightly", "surely",
+    "clearly", "right", "okay", "sure", "yeah", "yep", "nah", "nope",
+    "mhm", "hmm", "huh", "uhh", "umm", "alright", "fine",
+    # ── Chat / conversational noise ───────────────────────────
+    "gonna", "wanna", "gotta", "kinda", "sorta", "dunno", "idk",
+    "lol", "lmao", "haha", "hehe", "bruh", "bro", "dude", "man",
+    "hey", "hello", "thanks", "thank", "please", "sorry", "cool",
+    "nice", "great", "good", "bad", "stuff", "lot", "lots", "bit",
+    "whole", "kind", "type", "sort", "ways", "point", "real",
+    # ── App / system noise ────────────────────────────────────
+    "file", "files", "upload", "uploaded", "uploading", "attached",
+    "attachment", "message", "messages", "sent", "send", "chat",
+    "click", "button", "page", "screen", "open", "close", "load",
+    "loading", "save", "saved", "saving", "delete", "deleted",
+    "update", "updated", "error", "warning", "info",
+    # ── Common verbs too generic to be topical ────────────────
+    "help", "helped", "start", "started", "stop", "stopped",
+    "move", "moved", "change", "changed", "add", "added",
+    "end", "ended", "leave", "left", "bring", "brought",
+    "hold", "held", "read", "write", "wrote", "written",
+    "play", "played", "pay", "paid", "hear", "heard",
+    "mean", "meant", "become", "became", "begin", "began",
+    "stay", "stayed", "stand", "stood", "wait", "waiting",
+    "talk", "talked", "talking", "speak", "spoke",
+    # ── User identity (always high-freq, never topical) ───────
+    "ian", "graceful",
+    # ── Academic / document noise ─────────────────────────────
+    "paper", "essay", "midterm", "exam", "assignment", "homework",
+    "document", "doc", "docx", "pdf", "page", "pages", "chapter",
+    "section", "paragraph", "sentence", "word", "words", "text",
+    "study", "research", "question", "questions", "answer", "answers",
+    "note", "notes", "class", "course", "professor", "lecture",
+    "grade", "grades", "due", "submit", "submitted",
+}
+
+
+# ═══════════════════════════════════════════════════════════════
 # EXTRACTIVE SUMMARIZER — pure Python, no model needed
 # ═══════════════════════════════════════════════════════════════
 
@@ -63,13 +142,7 @@ def extractive_summary(turns: list[dict], topic_words: list[str] = None,
         words = _tokenize(all_text)
         # Simple TF: most frequent non-stop words
         freq = {}
-        stop = {"the", "and", "is", "in", "to", "of", "it", "that", "this",
-                "for", "was", "are", "with", "on", "as", "at", "be", "have",
-                "from", "or", "an", "but", "not", "you", "all", "can", "had",
-                "her", "his", "one", "our", "out", "they", "been", "has",
-                "its", "just", "like", "more", "about", "would", "what", "your",
-                "some", "them", "than", "other", "into", "could", "time", "very",
-                "when", "come", "made", "after", "back", "only", "me", "my", "do"}
+        stop = _STOP_WORDS
         for w in words:
             if w not in stop and len(w) > 2:
                 freq[w] = freq.get(w, 0) + 1
@@ -187,27 +260,33 @@ def _make_dream(digest: str, topic_words: list[str]) -> str:
     """
     if not topic_words and not digest:
         return ""
-    # Filter out HTML/CSS artifacts and common junk
-    _junk = {"color", "span", "text", "style", "div", "font", "background", "border",
-             "padding", "margin", "display", "width", "height", "none", "solid",
-             "rgba", "flex", "inline", "block", "content", "size", "weight",
-             "line", "auto", "left", "right", "top", "bottom", "center",
-             "hidden", "visible", "relative", "absolute", "position",
-             "transition", "opacity", "transform", "scale", "ease",
-             "monospace", "serif", "sans", "code", "pre", "html", "css",
-             "data", "class", "title", "href", "target", "rel",
-             # Common stopwords that aren't real topics
-             "the", "and", "that", "this", "with", "from", "have", "has",
-             "been", "were", "was", "are", "for", "not", "but", "what",
-             "all", "can", "had", "her", "his", "him", "how", "its",
-             "may", "new", "now", "old", "see", "way", "who", "did",
-             "get", "got", "let", "say", "she", "too", "use", "yes",
-             "here", "there", "just", "like", "also", "than", "then",
-             "them", "they", "into", "some", "could", "other", "about",
-             "which", "their", "will", "each", "make", "more", "very",
-             "when", "come", "know", "take", "want", "does", "thing",
-             "much", "because", "good", "give", "most", "only", "tell",
-             "one", "two", "you", "your", "yeah", "okay", "sure", "well"}
+    # Filter out HTML/CSS artifacts + all shared stopwords
+    _junk = _STOP_WORDS | {
+        # HTML / CSS / markup artifacts
+        "color", "span", "style", "div", "font", "background", "border",
+        "padding", "margin", "display", "width", "height", "solid",
+        "rgba", "flex", "inline", "block", "content", "size", "weight",
+        "auto", "center", "hidden", "visible", "relative", "absolute",
+        "position", "transition", "opacity", "transform", "scale", "ease",
+        "monospace", "serif", "sans", "code", "pre", "html", "css",
+        "data", "title", "href", "target", "rel", "img", "src", "alt",
+        "tbody", "thead", "table", "input", "form", "link", "meta",
+        "script", "body", "head", "header", "footer", "main", "nav",
+        "overflow", "cursor", "pointer", "hover", "focus", "active",
+        "inherit", "initial", "important", "pixel", "pixels", "rem",
+        # Numeric / temporal noise
+        "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "hundred", "thousand", "million",
+        "today", "tomorrow", "yesterday", "morning", "night", "evening",
+        "afternoon", "week", "month", "year", "day", "days", "hour", "hours",
+        "minute", "minutes", "second", "seconds", "ago", "later",
+        "monday", "tuesday", "wednesday", "thursday", "friday",
+        "saturday", "sunday", "january", "february", "march", "april",
+        "june", "july", "august", "september", "october", "november", "december",
+        # Extra conversational filler
+        "because", "though", "although", "whether", "unless", "despite",
+        "instead", "besides", "therefore", "thus", "hence", "meanwhile",
+    }
     clean = [w for w in topic_words if w not in _junk and len(w) > 2]
     themes = clean[:4] if clean else ["the conversation"]
     return "dreaming about: " + ", ".join(themes)
@@ -526,13 +605,7 @@ class SleepConsolidator:
             all_text = " ".join(t.get("content", "") for t in recent)
             words = _tokenize(all_text)
             freq = {}
-            stop = {"the", "and", "is", "in", "to", "of", "it", "that", "this",
-                    "for", "was", "are", "with", "on", "as", "at", "be", "have",
-                    "from", "or", "an", "but", "not", "you", "all", "can", "had",
-                    "her", "his", "one", "our", "out", "they", "been", "has",
-                    "its", "just", "like", "more", "about", "would", "what", "your",
-                    "some", "them", "than", "other", "into", "could", "time", "very",
-                    "when", "come", "made", "after", "back", "only", "me", "my", "do"}
+            stop = _STOP_WORDS
             for w in words:
                 if w not in stop and len(w) > 2:
                     freq[w] = freq.get(w, 0) + 1
