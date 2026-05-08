@@ -5169,11 +5169,15 @@ plt.tight_layout()
     intero_block = "" if _is_greeting else build_interoceptive_block()
 
     # ── Context budget allocation ────────────────────────────────
+    _budget_surplus = 0
     if _CONTEXT_BUDGET_AVAILABLE:
         _budgets     = _context_budget.allocate(user_msg, searched, bool(mem_context), turn_count[0], continuation=_is_continuation)
         mem_context  = _context_budget.truncate_to_budget(mem_context,  _budgets.get("corpus", 800) + _budgets.get("identity", 300))
+        _budget_surplus += _context_budget.returned_surplus()
         intero_block = _context_budget.truncate_to_budget(intero_block, _budgets.get("interoception", 300))
+        _budget_surplus += _context_budget.returned_surplus()
         web_context  = _context_budget.truncate_to_budget(web_context,  _budgets.get("search", 1800))
+        _budget_surplus += _context_budget.returned_surplus()
     else:
         _budgets = {}
 
@@ -5290,23 +5294,31 @@ plt.tight_layout()
                                 "content": f"{full_context}\n\n[USER]\n{messages[i]['content']}"}
                 break
 
-    # ── Total message budget — prevent prompt from exceeding safe size ──
-    # Dynamic prompt cap (memory-aware) is the real OOM guard.
-    # This is a soft pre-filter — let more through so corpus content survives.
-    _MSG_CHAR_BUDGET = 6000
+    # ── Adaptive message budget — derived from actual Metal headroom ──
+    # Instead of fixed caps, compute from the same formula as the dynamic prompt cap.
+    # This way the message trimmer and the final prompt trimmer agree on the ceiling.
+    try:
+        _pre_budget_mem = mx.get_active_memory() / (1024**3)
+        _pre_headroom = max(0, 16 - _pre_budget_mem - 3.5)
+        # Messages become tokens; template/system add ~2000 chars on top.
+        # Budget = headroom-based cap minus overhead estimate.
+        _MSG_CHAR_BUDGET = int(max(2000, min(7000, _pre_headroom * 1800 - 1500)))
+    except Exception:
+        _MSG_CHAR_BUDGET = 5000  # safe fallback
+    # Redistribute unused context budget to history — don't waste headroom
+    _MSG_CHAR_BUDGET += _budget_surplus
     _total_msg_chars = sum(len(m.get("content", "")) for m in messages)
     if _total_msg_chars > _MSG_CHAR_BUDGET and len(messages) > 2:
         # Drop oldest non-system messages until under budget, keeping last 2 (user+context)
         while _total_msg_chars > _MSG_CHAR_BUDGET and len(messages) > 2:
-            # Find first non-system message to drop
-            for _di in range(len(messages) - 2):  # don't drop last 2
+            for _di in range(len(messages) - 2):
                 if messages[_di]["role"] != "system":
                     _total_msg_chars -= len(messages[_di].get("content", ""))
                     messages.pop(_di)
                     break
             else:
-                break  # only system messages left, stop
-        print(f"[CHAT] trimmed messages to {len(messages)} msgs / {_total_msg_chars} chars (budget={_MSG_CHAR_BUDGET})", flush=True)
+                break
+        print(f"[CHAT] trimmed messages to {len(messages)} msgs / {_total_msg_chars} chars (budget={_MSG_CHAR_BUDGET}, mem={_pre_budget_mem:.1f}GB)", flush=True)
 
     # ── Think mode: inject CoT system instruction ──────────────
     _an = _assistant_name[0] or "Graceful"
@@ -5598,13 +5610,17 @@ plt.tight_layout()
         else:
             messages = [{"role": "system", "content": _full_sys}] + messages
 
-    # ── Total prompt budget: trim oldest messages if context is too large ──
-    # Dynamic prompt cap (line ~5825) is the memory-aware safety net.
-    # This soft budget drops old turns to keep prompt reasonable pre-template.
-    _TOTAL_CHAR_BUDGET = 7000
+    # ── Total prompt budget: trim after system prompt injection ──
+    # Uses same memory-derived ceiling as the pre-injection trimmer.
+    # System prompt adds ~1500-2500 chars, so budget is slightly higher here.
+    try:
+        _post_sys_mem = mx.get_active_memory() / (1024**3)
+        _post_headroom = max(0, 16 - _post_sys_mem - 3.5)
+        _TOTAL_CHAR_BUDGET = int(max(2500, min(8000, _post_headroom * 1800)))
+    except Exception:
+        _TOTAL_CHAR_BUDGET = 6000
     _ctx_chars = sum(len(str(m.get("content", ""))) for m in messages)
     while _ctx_chars > _TOTAL_CHAR_BUDGET and len(messages) > 3:
-        # Preserve system message (first) and last user message — drop oldest turns
         for _i in range(len(messages)):
             if messages[_i]["role"] != "system":
                 _ctx_chars -= len(str(messages[_i].get("content", "")))

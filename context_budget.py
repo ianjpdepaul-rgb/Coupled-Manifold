@@ -116,14 +116,22 @@ class ContextBudget:
         """
         Truncate text to budget chars, keeping the beginning and the end
         (middle-out truncation preserves opening context + recent content).
+        Returns the truncated text. Track surplus with returned_surplus().
         """
         if not text or budget <= 0:
             return ""
         if len(text) <= budget:
+            # Under budget — record surplus for reallocation
+            self._last_surplus = budget - len(text)
             return text
+        self._last_surplus = 0
         _marker = "\n[... truncated ...]\n"
         half = max(0, (budget - len(_marker)) // 2)
         return text[:half] + _marker + text[-half:]
+
+    def returned_surplus(self) -> int:
+        """Chars unused by the last truncate_to_budget call. Available for history."""
+        return getattr(self, "_last_surplus", 0)
 
     def format_bar_html(self, budgets: dict) -> str:
         """
