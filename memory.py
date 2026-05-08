@@ -1057,22 +1057,31 @@ class Memory:
             if id_block.strip() not in ("", "[IDENTITY]"):
                 parts.append(id_block)
 
-        # Corpus — only inject chunks that are actually relevant
+        # Corpus — inject relevant chunks with scores and structure.
+        # Best match goes LAST (closest to user message → stronger attention).
         if n_corpus > 0:
             scored = self.corpus.search(query, k=n_corpus, return_scores=True)
             relevant = [(s, c) for s, c in scored if s >= min_score]
             if relevant:
-                parts.append("[RELEVANT EXCERPTS FROM THE USER'S WRITING — for context only, not your own words]")
-                # Budget: up to ~3000 chars total for corpus, full chunk text preferred
+                # Sources summary — model knows what it's looking at
+                _src_counts: dict = {}
+                for _, c in relevant:
+                    _s = c.get("source", "unknown")
+                    _src_counts[_s] = _src_counts.get(_s, 0) + 1
+                _src_summary = ", ".join(f"{s} ({n})" for s, n in _src_counts.items())
+                parts.append(f"[EXCERPTS FROM USER'S DOCUMENTS: {_src_summary}]")
+                # Budget-aware injection, weakest first → strongest last (attention recency)
                 _corpus_budget = 3000
                 _corpus_used = 0
-                for _, c in relevant:
+                _ordered = sorted(relevant, key=lambda x: x[0])  # ascending = weakest first
+                for _score, c in _ordered:
                     src = c.get("source", "unknown")
                     txt = c.get("text", "")
                     _cap = min(len(txt), _corpus_budget - _corpus_used)
                     if _cap <= 50:
-                        break  # no room left
-                    parts.append(f"[user writing — {src}]\n{txt[:_cap]}")
+                        break
+                    _relevance = "strong" if _score >= 0.5 else "moderate" if _score >= 0.3 else "weak"
+                    parts.append(f"[{src} — relevance: {_relevance}]\n{txt[:_cap]}")
                     _corpus_used += _cap
 
         return "\n\n".join(parts) if parts else ""
