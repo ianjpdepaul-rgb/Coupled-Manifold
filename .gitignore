@@ -63,5 +63,7 @@ app.py.bak
 icon.png
 /static/
 !/static/bunny_game.js
+!/static/mermaid.min.js
+!/static/d3.min.js
 *.jsonl
 !tests/chat_agent/baselines/*.jsonl

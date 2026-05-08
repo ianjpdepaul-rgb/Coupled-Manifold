@@ -1086,7 +1086,9 @@ input[type=range]{accent-color:var(--primary)!important;}
 <link rel="stylesheet" href="/static/katex.min.css">
 <script src="/static/katex.min.js"></script>
 <script src="/static/katex-auto-render.min.js" onload="window._katexReady=true;document.querySelectorAll('.msg-row.assistant .bubble').forEach(function(b){renderMath(b);});"></script>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="/static/mermaid.min.js"></script>
+<script>if(typeof mermaid==="undefined"){document.write('<scr'+'ipt src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"><\/scr'+'ipt>');}</script>
+<script src="/static/d3.min.js"></script>
 <script>if(typeof d3==="undefined"){document.write('<scr'+'ipt src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"><\/scr'+'ipt>');}</script>
 <script>
 // Safe HTML escaping helper — prevents XSS in dynamically-built HTML

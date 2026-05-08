@@ -390,6 +390,8 @@ def _ensure_static_libs():
         "marked.min.js":    "https://cdn.jsdelivr.net/npm/marked@9/marked.min.js",
         "highlight.min.js": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js",
         "highlight.css":    "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css",
+        "mermaid.min.js":   "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js",
+        "d3.min.js":        "https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js",
     }
     for fname, url in libs.items():
         path = f"./static/{fname}"
