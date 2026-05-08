@@ -24,7 +24,7 @@ _KEYS_PATH  = f"{DATA_DIR}/keys.json"
 _SETTINGS_PATH = f"{DATA_DIR}/user_settings.json"
 
 # ── Limits ───────────────────────────────────────────────────────
-MAX_PROMPT_CHARS = 2500   # tight for 12B on 16GB — prevents OOM on prefill
+MAX_PROMPT_CHARS = 6000   # context budget ceiling — dynamic prompt cap is the real OOM guard
 DEV              = "mlx"
 CONSEC_PATHO_LIMIT = 3
 TREND_WINDOW       = 5

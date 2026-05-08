@@ -49,10 +49,10 @@ class ContextBudget:
 
         if _is_academic(q):
             budget = {
-                "corpus":        1200,
-                "search":        1500 if has_search else 0,
-                "history":       1200,
-                "identity":      200,
+                "corpus":        3000,
+                "search":        1800 if has_search else 0,
+                "history":       1500,
+                "identity":      300,
                 "interoception": 300,
             }
         elif any(w in q for w in ["you know", "remember", "told you",
@@ -60,22 +60,22 @@ class ContextBudget:
             budget = {
                 "identity":      600,
                 "history":       3000,
-                "corpus":        600,
+                "corpus":        1500 if has_corpus else 0,
                 "search":        0,
                 "interoception": 300,
             }
         elif has_search:
             budget = {
-                "search":        1800,
-                "history":       1200,
-                "corpus":        0,
+                "search":        2500,
+                "history":       1500,
+                "corpus":        800 if has_corpus else 0,
                 "identity":      200,
                 "interoception": 300,
             }
         else:
             budget = {
                 "history":       2500,
-                "corpus":        800 if has_corpus else 0,
+                "corpus":        2000 if has_corpus else 0,
                 "identity":      300,
                 "interoception": 350,
                 "search":        0,

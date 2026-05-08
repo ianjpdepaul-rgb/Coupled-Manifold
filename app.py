@@ -5277,9 +5277,9 @@ plt.tight_layout()
                 break
 
     # ── Total message budget — prevent prompt from exceeding safe size ──
-    # 6677 chars crashed Metal at 7.5GB. Keep total messages under ~3500 chars
-    # (system prompt adds ~1500-3500 on top of this).
-    _MSG_CHAR_BUDGET = 3500
+    # Dynamic prompt cap (memory-aware) is the real OOM guard.
+    # This is a soft pre-filter — let more through so corpus content survives.
+    _MSG_CHAR_BUDGET = 6000
     _total_msg_chars = sum(len(m.get("content", "")) for m in messages)
     if _total_msg_chars > _MSG_CHAR_BUDGET and len(messages) > 2:
         # Drop oldest non-system messages until under budget, keeping last 2 (user+context)
@@ -5585,9 +5585,9 @@ plt.tight_layout()
             messages = [{"role": "system", "content": _full_sys}] + messages
 
     # ── Total prompt budget: trim oldest messages if context is too large ──
-    # 4000 chars ≈ 1000 tokens — safe prefill for 12B on 16GB with KV cache room.
-    # System prompt adds ~1500-3000 on top. Dynamic cap below will trim further if needed.
-    _TOTAL_CHAR_BUDGET = 4000
+    # Dynamic prompt cap (line ~5825) is the memory-aware safety net.
+    # This soft budget drops old turns to keep prompt reasonable pre-template.
+    _TOTAL_CHAR_BUDGET = 7000
     _ctx_chars = sum(len(str(m.get("content", ""))) for m in messages)
     while _ctx_chars > _TOTAL_CHAR_BUDGET and len(messages) > 3:
         # Preserve system message (first) and last user message — drop oldest turns
@@ -5822,7 +5822,7 @@ plt.tight_layout()
             # + attention buffer during chunked prefill. Empirically ~0.65MB/token for 12B.
             # 1GB headroom ≈ 1536 tokens ≈ 5000 chars. Use conservative 1800 chars/GB.
             _dynamic_prompt_cap = int(_headroom_gb * 1800)
-            _dynamic_prompt_cap = max(800, min(_dynamic_prompt_cap, 3000))  # clamp [800, 3000]
+            _dynamic_prompt_cap = max(800, min(_dynamic_prompt_cap, 7000))  # clamp [800, 7000]
 
             # Hard memory gates — override formula at dangerous thresholds
             # Note: 12B model baseline is ~7.5GB, so only trigger near actual OOM.
@@ -5880,7 +5880,7 @@ plt.tight_layout()
                 if len(raw_tokens) % 32 == 0:
                     try:
                         _mid_mem = mx.get_active_memory()
-                        if _mid_mem > 9.5 * 1024**3:
+                        if _mid_mem > 11.0 * 1024**3:
                             print(f"[GEN] ⚠ mid-gen memory {_mid_mem/(1024**3):.1f}GB — stopping early", flush=True)
                             break
                     except Exception:
