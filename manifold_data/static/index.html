@@ -210,6 +210,13 @@ body.theme-light #mic-btn{background:rgba(236,72,153,.06)!important;border-color
 #scroll-btn:hover{color:var(--text);background:var(--bg3);}
 #input-area{padding:12px 16px 18px;border-top:1px solid var(--border);flex-shrink:0}
 .iw-outer{max-width:680px;margin:0 auto}
+#attach-preview{display:none;padding:0 0 8px;gap:6px;flex-wrap:wrap}
+#attach-preview.on{display:flex}
+.file-chip{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.06);border:1px solid var(--border2);border-radius:8px;padding:6px 12px;font-size:.82em;color:var(--text2);max-width:260px}
+.file-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-chip .fc-x{background:none;border:none;color:var(--text4);cursor:pointer;font-size:1.1em;padding:0 0 0 4px;line-height:1}
+.file-chip .fc-x:hover{color:var(--text2)}
+.file-bubble{background:transparent!important;padding:4px 0!important;border:none!important}
 #input-box{display:flex;align-items:flex-end;gap:6px;background:var(--bg3);border:1px solid var(--border2);border-radius:14px;padding:8px 8px 8px 14px;transition:border-color .14s}
 #input-box:focus-within{border-color:#505050}
 #msg{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:.91em;font-family:var(--font);resize:none;line-height:1.52;padding:3px 0;min-height:24px;max-height:200px;overflow-y:auto}
@@ -741,6 +748,7 @@ input[type=range]{accent-color:var(--primary)!important;}
   <div id="bunny-strip"></div>
   <div id="input-area">
     <div id="pins-bar" style="display:none;padding:0 0 6px;gap:5px;flex-wrap:wrap"></div>
+    <div id="attach-preview"></div>
     <div class="iw-outer">
       <div id="url-offer"></div>
       <div class="iw-row">
@@ -1479,7 +1487,13 @@ function buildRow(role,content,idx){
   if(role==="user"){
     // content may be an array (multipart: text + image ref) — extract text portion
     var _uc=Array.isArray(content)?content.map(function(c){return typeof c==="string"?c:(c&&c.text)||"";}).join(" "):String(content||"");
-    bub.textContent=_uc;
+    var _fileMatch=_uc.match(/^\[file: (.+)\]$/);
+    if(_fileMatch){
+      bub.innerHTML='<div class="file-chip">\uD83D\uDCCE <span>'+_fileMatch[1].replace(/</g,"&lt;")+'</span></div>';
+      bub.classList.add("file-bubble");
+    }else{
+      bub.textContent=_uc;
+    }
   }
   else{
     var clean=(content||"").replace(/ ?\u258c/g,"");
@@ -2334,6 +2348,8 @@ async function sendEdit(msgIdx,newText){
 }
 async function sendMessage(text){
   text=(text||"").trim();if(!text||isGen)return;
+  // Clear any pending attachment preview chips
+  if(typeof _clearAttachPreview==="function")_clearAttachPreview();
   // Handle sleep states on send
   if(_sleepState==="drowsy"){
     _statusStrip.clear("sleep");_sleepState="awake";
@@ -3129,7 +3145,13 @@ document.addEventListener("DOMContentLoaded",function(){
         e.preventDefault();
         var file=item.getAsFile();
         if(!file)continue;
-        var fd=new FormData();fd.append("file",file,"pasted-image.png");
+        var _pName=file.name||"pasted-image.png";
+        var fd=new FormData();fd.append("file",file,_pName);
+        // Show user file-chip bubble
+        var _fileTag="[file: "+_pName+"]";
+        history.push({role:"user",content:_fileTag});
+        getMW().appendChild(buildRow("user",_fileTag,history.length-1));hideEmpty();scrollBot();
+        _showAttachPreview(_pName);
         var r=await fetch("/api/upload",{method:"POST",body:fd});
         var d=await r.json();
         if(d.reply){history.push({role:"assistant",content:d.reply});getMW().appendChild(buildRow("assistant",d.reply,history.length-1));hideEmpty();scrollBot();}
@@ -3408,15 +3430,33 @@ document.addEventListener("DOMContentLoaded",function(){
   }
   document.getElementById("insights-refresh-btn").onclick=_loadInsights;
   // ── end insights ──
+  // ── Attachment preview strip helpers ──
+  function _showAttachPreview(name){
+    var bar=document.getElementById("attach-preview");if(!bar)return;
+    var chip=document.createElement("div");chip.className="file-chip";
+    chip.innerHTML='\uD83D\uDCCE <span>'+name.replace(/</g,"&lt;")+'</span><button class="fc-x" title="Remove">\u00d7</button>';
+    chip.querySelector(".fc-x").onclick=function(){chip.remove();if(!bar.children.length)bar.classList.remove("on");};
+    bar.appendChild(chip);bar.classList.add("on");
+  }
+  function _clearAttachPreview(){
+    var bar=document.getElementById("attach-preview");if(!bar)return;
+    bar.innerHTML="";bar.classList.remove("on");
+  }
   var fi=document.getElementById("file-inp");
   document.getElementById("attach-btn").onclick=function(){fi.click();};
   fi.onchange=async function(){
     for(var i=0;i<fi.files.length;i++){
       var f=fi.files[i],fd=new FormData();fd.append("file",f);
+      // Show user file-chip bubble
+      var _fileTag="[file: "+f.name+"]";
+      history.push({role:"user",content:_fileTag});
+      getMW().appendChild(buildRow("user",_fileTag,history.length-1));hideEmpty();scrollBot();
       var r=await fetch("/api/upload",{method:"POST",body:fd});
       var d=await r.json();
       if(d.reply){history.push({role:"assistant",content:d.reply});getMW().appendChild(buildRow("assistant",d.reply,history.length-1));hideEmpty();scrollBot();}
       toast(d.msg||d.error||f.name+" uploaded","ok");
+      // Show pending-attachment preview for media files (attached to next message)
+      if(d.msg&&d.msg.indexOf("attached")!==-1)_showAttachPreview(f.name);
       if(d.indexed||d.msg&&d.msg.toLowerCase().indexOf("index")!==-1){
         _statusStrip.set('corpus','\uD83D\uDCC2 indexed','sp-green',{title:'Corpus updated'});
         setTimeout(function(){_statusStrip.clear('corpus');},5000);
@@ -3431,10 +3471,15 @@ document.addEventListener("DOMContentLoaded",function(){
     e.preventDefault();document.getElementById("drag-ov").classList.remove("on");
     for(var i=0;i<e.dataTransfer.files.length;i++){
       var f=e.dataTransfer.files[i],fd=new FormData();fd.append("file",f);
+      // Show user file-chip bubble
+      var _fileTag="[file: "+f.name+"]";
+      history.push({role:"user",content:_fileTag});
+      getMW().appendChild(buildRow("user",_fileTag,history.length-1));hideEmpty();scrollBot();
       var r=await fetch("/api/upload",{method:"POST",body:fd});
       var d=await r.json();
       if(d.reply){history.push({role:"assistant",content:d.reply});getMW().appendChild(buildRow("assistant",d.reply,history.length-1));hideEmpty();scrollBot();}
       toast(d.msg||f.name+" attached","ok");
+      if(d.msg&&d.msg.indexOf("attached")!==-1)_showAttachPreview(f.name);
     }
   });
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;

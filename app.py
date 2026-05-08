@@ -1256,6 +1256,7 @@ _pending_trace_lock = threading.Lock()  # guards _pending_trace and _pending_tra
 _pending_image = [None]    # path to image attached for next generation turn
 _pending_audio = [None]    # path to audio attached for next generation turn
 _pending_video = [None]    # list of PIL Image frames extracted from video
+_last_indexed_file = [None, 0]  # [filename, turn_count] — tracks recently indexed uploads
 
 # ── Dual-model pair — wraps existing model + optionally loads 1.5B ──
 try:
@@ -5089,9 +5090,21 @@ plt.tight_layout()
     _drift_pre   = compute_drift(user_msg)  # pre-gen drift on user message
     if _drift_pre > 0.55:                   # user drifting from corpus — boost injection
         _ctx_corpus = min(_ctx_corpus + 2, 4)
+    # Recently uploaded file — boost corpus injection so the model actually sees the content
+    _recent_upload = (_last_indexed_file[0] and turn_count[0] - _last_indexed_file[1] <= 6)
+    if _recent_upload:
+        _ctx_corpus = max(_ctx_corpus, 4)
+    _min_score = 0.16 if _drift_pre > 0.55 else 0.20
+    if _recent_upload:
+        _min_score = 0.08  # very low threshold — uploaded files should always surface
+    # When a file was recently uploaded, augment search query with filename so
+    # vague references ("check it out", "the paper") still retrieve chunks
+    _corpus_query = user_msg
+    if _recent_upload and _last_indexed_file[0]:
+        _corpus_query = f"{user_msg} {_last_indexed_file[0]}"
     mem_context  = "" if _is_greeting else mem.build_context(
-        user_msg, n_corpus=_ctx_corpus, compact_identity=_ctx_compact,
-        min_score=0.16 if _drift_pre > 0.55 else 0.20)
+        _corpus_query, n_corpus=_ctx_corpus, compact_identity=_ctx_compact,
+        min_score=_min_score)
     intero_block = "" if _is_greeting else build_interoceptive_block()
 
     # ── Context budget allocation ────────────────────────────────
@@ -5116,6 +5129,16 @@ plt.tight_layout()
     if mem_context:    context_parts.append(mem_context)
     if intero_block:   context_parts.append(intero_block)
     if web_context:    context_parts.append(web_context)
+
+    # Recently uploaded file — remind the model it has access to the document
+    if _recent_upload and _last_indexed_file[0]:
+        context_parts.append(
+            f"[NOTE: The user recently uploaded \"{_last_indexed_file[0]}\" which has been "
+            "indexed. The excerpts above are from this file. Reference them directly when "
+            "answering questions about the file. Use <tool:find query> to retrieve more "
+            "specific sections if needed. Do NOT pretend to have read the file if the "
+            "excerpts above don't contain the answer — use the find tool instead.]"
+        )
 
     # Cross-session continuity — inject topic/thread awareness from prior sessions
     _continuity = _cross_session.get_continuity_context()
@@ -5474,6 +5497,9 @@ plt.tight_layout()
             if "```python" in _hc or "<tool:" in _hc or "▶ output" in _hc or "k-means" in _hc.lower() or "KMeans" in _hc:
                 _needs_tools = True
                 break
+    # Recently uploaded file — keep find tool available so model can reference content
+    if not _needs_tools and _recent_upload:
+        _needs_tools = True
     _tool_sys = _TOOL_SYSTEM if _needs_tools else "Respond in the same language the user is writing in. Default to English if unclear."
     _full_sys = (_sys_content + "\n\n" + _tool_sys) if _sys_content else _tool_sys
     # Stage 2: append model-authored session additions
@@ -7709,7 +7735,9 @@ async def api_upload(file: UploadFile):
         fname = file.filename or os.path.basename(_ipath)
         reply = f"**🖼 {fname}** — attached to next message."
         with _session_lock:
+            _session_history.append({"role": "user", "content": f"[file: {fname}]"})
             _session_history.append({"role": "assistant", "content": reply})
+        mem.append_turn("user", f"[file: {fname}]")
         mem.append_turn("assistant", reply)
         return JSONResponse({"ok": True, "reply": reply, "msg": f"{fname} attached"})
 
@@ -7725,7 +7753,9 @@ async def api_upload(file: UploadFile):
         fname = file.filename or os.path.basename(_apath)
         reply = f"**🎵 {fname}** — attached to next message."
         with _session_lock:
+            _session_history.append({"role": "user", "content": f"[file: {fname}]"})
             _session_history.append({"role": "assistant", "content": reply})
+        mem.append_turn("user", f"[file: {fname}]")
         mem.append_turn("assistant", reply)
         return JSONResponse({"ok": True, "reply": reply, "msg": f"{fname} attached"})
 
@@ -7747,7 +7777,9 @@ async def api_upload(file: UploadFile):
             try: os.unlink(_vpath)
             except Exception: pass
         with _session_lock:
+            _session_history.append({"role": "user", "content": f"[file: {fname}]"})
             _session_history.append({"role": "assistant", "content": reply})
+        mem.append_turn("user", f"[file: {fname}]")
         mem.append_turn("assistant", reply)
         return JSONResponse({"ok": True, "reply": reply, "msg": f"{fname} attached"})
 
@@ -7812,12 +7844,16 @@ async def api_upload(file: UploadFile):
         except Exception:
             preview = ""
         build_corpus_centroid()
+        _last_indexed_file[0] = fname
+        _last_indexed_file[1] = turn_count[0]
         reply = (f"**📎 {fname}** — {n} chunks indexed."
                  + (f"\n\n> {preview}{'…' if len(preview) >= 300 else ''}" if preview and not _auto_analysis else "")
                  + _auto_analysis
                  + ("\n\n*Ask me anything about it.*" if not _auto_analysis else ""))
         with _session_lock:
+            _session_history.append({"role": "user", "content": f"[file: {fname}]"})
             _session_history.append({"role": "assistant", "content": reply})
+        mem.append_turn("user", f"[file: {fname}]")
         mem.append_turn("assistant", reply)
         return JSONResponse({"ok": True, "reply": reply, "chunks": n})
     finally:
