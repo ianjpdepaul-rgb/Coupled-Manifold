@@ -691,7 +691,7 @@ def compute_trace_for_model(target_model, tokens_np):
 from search_stack import search as _search_stack, should_search, format_results, search_by_intent
 from intent_router import IntentRouter
 
-_intent_router = IntentRouter()  # fast-path only (no generate_fn)
+_intent_router = None  # initialized after model load
 
 def search_web(query):
     return _search_stack(query)
@@ -1179,6 +1179,20 @@ except Exception as _pair_err:
             return model, tok, ctrl, opt, "Gemma3-12B"
         def switch_mode(self, m): pass
     pair = _FakePair()
+
+
+def _intent_generate(prompt: str, max_tokens: int) -> str:
+    """Lightweight generate for intent classification — 40 tokens max."""
+    with _model_lock:
+        _lock_holder[0] = "intent_classify"
+        try:
+            result = _mlx_generate(model, tok, prompt, max_tokens=max_tokens, verbose=False)
+            return result.text if hasattr(result, 'text') else str(result)
+        finally:
+            _lock_holder[0] = "none"
+
+_intent_router = IntentRouter(generate_fn=_intent_generate)
+print("  🧭 Intent router loaded (model-backed)")
 
 
 def _session_warmup():
