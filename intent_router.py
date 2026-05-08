@@ -176,6 +176,22 @@ def _classify_fast(msg: str) -> IntentDecision | None:
                 should_search=False, search_sources=None,
             )
 
+    # Conversational progress checks → analysis (no search)
+    # "how are the bottles doing still?" is about chat context, not a web query
+    _progress = [
+        r'\bhow (are|is) .+ (doing|going|coming along|progressing|looking|working out)\b',
+        r'\bwhat.?s (happening|going on) with\b',
+        r'\b(still|yet)\b.*\?$',
+        r'\bhow.?s .+ (going|coming)\b',
+    ]
+    for pattern in _progress:
+        if re.search(pattern, ml):
+            return IntentDecision(
+                intent="analysis", confidence="high",
+                reason="conversational progress check",
+                should_search=False, search_sources=None,
+            )
+
     # Follow-up / continuation → analysis (no search)
     _follow_up = [
         r'^(why\b|how come|what about|can you explain|could you|tell me more|go on|continue)',

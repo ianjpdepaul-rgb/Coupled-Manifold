@@ -4885,8 +4885,12 @@ plt.tight_layout()
             r'find[,\s]+(?:me[,\s]+)?|check[,\s]+(?:on[,\s]+)?)',
             '', msg.strip(), flags=_re.IGNORECASE
         ).strip()
-        # Also trim trailing question softeners
-        q = _re.sub(r'[,\s]*(?:for me|please|thanks|thank you|right\?|correct\?)$', '', q, flags=_re.IGNORECASE).strip()
+        # Strip conversational wrappers: "how are X doing still?" → "X"
+        q = _re.sub(r'^(?:how (?:are|is)\s+)', '', q, flags=_re.IGNORECASE).strip()
+        q = _re.sub(r'^(?:what(?:\'s|s)?\s+(?:happening|going on)\s+with\s+)', '', q, flags=_re.IGNORECASE).strip()
+        # Trim trailing conversational filler
+        q = _re.sub(r'[,\s]*(?:doing|going|coming along|progressing|looking|working out)(?:\s+(?:still|now|yet|lately|these days))?\s*\??$', '', q, flags=_re.IGNORECASE).strip()
+        q = _re.sub(r'[,\s]*(?:for me|please|thanks|thank you|right\?|correct\?|still\??)$', '', q, flags=_re.IGNORECASE).strip()
         q = q or msg
         # ── Context expansion: resolve vague/pronoun-heavy queries ──
         # "how are they created?" + prior msg about synthetic datasets → "synthetic datasets virtual twins how are they created"

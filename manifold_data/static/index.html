@@ -1882,11 +1882,8 @@ document.getElementById("messages").addEventListener("scroll",function(){
 });
 document.getElementById("scroll-btn").onclick=function(){_userScrolled=false;scrollBot(true);};
 });
-var _traceEverShown=false;
 function updateMedulla(status,hist){
   var bar=document.getElementById("medulla-bar");if(!status)return;
-  // Auto-open trace bar on first trace data so the user can see it without clicking
-  if(!_traceEverShown){bar.classList.add("on");_traceEverShown=true;}
   if(hist&&hist.length){
     var last=hist[hist.length-1];
     if(last&&last.role==="assistant"&&last.content){
