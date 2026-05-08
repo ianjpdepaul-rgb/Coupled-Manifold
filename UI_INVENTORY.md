@@ -17,7 +17,7 @@ Complete catalog of every interactive element in `manifold_data/static/index.htm
 | `#export-json-btn` | `↑ json` | Export session as JSON |
 | `#think-btn` | `Think` | Toggle deep reasoning (think mode) |
 | `#kg-btn` | `◉ Map` | Open/close Borgesian Map (knowledge graph) panel |
-| `#mem-browser-btn` | `🧠 Memory` | Open/close memory browser panel |
+| `#mem-browser-btn` | `Memory` | Open/close memory browser panel |
 | `#tts-btn` | `🔊` | Toggle TTS read-aloud on responses |
 | `#sound-btn` | `🔇` / `🔊` | Toggle sound effects (chime on response complete) |
 | `#theme-btn` | `⚙ Theme` | Open/close theme editor panel |

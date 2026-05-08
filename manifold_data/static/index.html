@@ -87,7 +87,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #trace-pill{font-size:.58em;color:var(--text4);font-family:var(--mono);max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
 #medulla-bar{display:none;font-size:.62em;color:var(--text3);font-family:var(--mono);padding:6px 22px 10px;background:rgba(0,0,0,.32);border-bottom:1px solid var(--border2);flex-shrink:0;line-height:1.72;overflow-y:auto;max-height:220px}
 #medulla-bar.on{display:block}
-#behavior-bar{display:none;font-size:.75em;color:var(--text3);font-family:var(--font);padding:10px 22px 14px;background:rgba(0,0,0,.28);border-bottom:1px solid var(--border2);flex-shrink:1;overflow-y:auto;max-height:38vh;min-height:0}
+#behavior-bar{display:none;font-size:.75em;color:var(--text3);font-family:var(--font);padding:10px 22px 14px;background:rgba(0,0,0,.28);border-bottom:1px solid var(--border2);flex-shrink:1;overflow-y:auto;max-height:60vh;min-height:0}
 #behavior-bar.on{display:block}
 #bb-tip{position:fixed;z-index:9999;max-width:280px;padding:6px 10px;background:#1a1a1a;border:1px solid #444;border-radius:6px;font-size:11px;color:#ccc;line-height:1.4;pointer-events:none;opacity:0;transition:opacity .15s;font-family:var(--font);box-shadow:0 4px 12px rgba(0,0,0,.4)}
 #bb-tip.show{opacity:1}
@@ -178,10 +178,7 @@ body.theme-light #mic-btn{background:rgba(236,72,153,.06)!important;border-color
 .ma-btn{background:none;border:1px solid var(--border);border-radius:5px;padding:2px 8px;cursor:pointer;font-size:.64em;color:var(--text3);transition:all .1s;font-family:var(--font)}
 .ma-btn:hover{color:var(--text2);border-color:var(--border2)}
 .ma-btn.active{color:var(--pink);border-color:rgba(255,51,102,.35)}
-.msg-ts{display:none;position:absolute;font-size:.6em;color:var(--text3);font-family:var(--mono);top:-14px;pointer-events:none}
-.msg-row.user .msg-ts{right:0}
-.msg-row.assistant .msg-ts{left:0}
-.msg-row:hover .msg-ts{display:block}
+.msg-ts{display:none!important}
 .cf-row{display:flex;align-items:center;justify-content:space-between;padding:4px 8px;background:var(--bg2);border-radius:6px;font-size:.75em;color:var(--text2)}
 .cf-src{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:72%}
 .cf-info{color:var(--text3);font-family:var(--mono);flex-shrink:0}
@@ -640,13 +637,19 @@ a{color:var(--primary);}
 #mic-btn.recording{background:linear-gradient(135deg,var(--primary-dim),rgba(0,0,0,.1))!important;border-color:var(--primary-border)!important;}
 input[type=range]{accent-color:var(--primary)!important;}
 #think-btn.on,#sync-btn.on{background:var(--primary-dim)!important;border-color:var(--primary-border)!important;color:var(--primary)!important;}
+
+/* ── Bunny strip ── */
+#bunny-strip{position:relative;height:0;overflow:visible;pointer-events:none;z-index:50;flex-shrink:0;}
+.bunny-sprite{position:absolute;bottom:0;width:64px;height:64px;background-size:auto 64px;image-rendering:pixelated;-webkit-image-rendering:crisp-edges;pointer-events:none;transition:none;filter:drop-shadow(0 0 1px rgba(255,255,255,0.15));}
+/* Sleep overlay bunny */
+#sleep-bunny-icon{width:96px;height:96px;margin:0 auto;background-size:auto 96px;image-rendering:pixelated;-webkit-image-rendering:crisp-edges;}
 </style>
 </head>
 <body>
 <div id="bb-tip"></div>
 <div id="sleep-overlay">
   <div id="sleep-box">
-    <div class="sleep-icon">&#x1F31C;</div>
+    <div class="sleep-icon" id="sleep-bunny-icon"></div>
     <div class="sleep-dots"><span></span><span></span><span></span></div>
     <div class="sleep-dream" id="sleep-dream-text" style="display:none"></div>
     <div class="sleep-wake-hint" id="sleep-wake-hint" style="font-size:.62em;color:var(--text3,#555);margin-top:12px;letter-spacing:.5px"></div>
@@ -706,7 +709,7 @@ input[type=range]{accent-color:var(--primary)!important;}
       <button id="think-btn">Think</button>
       <button id="sync-btn">Sync</button>
       <button id="kg-btn" title="Borgesian Map">&#9673; Map</button>
-      <button id="mem-browser-btn" title="Memory browser">&#x1F9E0; Memory</button>
+      <button id="mem-browser-btn" title="Memory browser">Memory</button>
       <button id="tts-btn" title="Read aloud (TTS)">&#x1F50A;</button>
       <button id="sound-btn" title="Sound effects (chime on response)">&#x1F507;</button>
       <button id="theme-btn" title="Theme editor">&#9881; Theme</button>
@@ -735,6 +738,7 @@ input[type=range]{accent-color:var(--primary)!important;}
     </div>
     <button id="scroll-btn" title="Scroll to bottom">&#8595;</button>
   </div>
+  <div id="bunny-strip"></div>
   <div id="input-area">
     <div id="pins-bar" style="display:none;padding:0 0 6px;gap:5px;flex-wrap:wrap"></div>
     <div class="iw-outer">
@@ -828,6 +832,11 @@ input[type=range]{accent-color:var(--primary)!important;}
       <div class="s-lbl">Proactive Messaging</div>
       <div class="s-sub">unprompted check-ins, reminders, and nudges</div>
       <button class="s-btn" id="proactive-toggle-btn" style="min-width:60px">On</button>
+    </div>
+    <div class="s-sec">
+      <div class="s-lbl">Bunnies</div>
+      <div class="s-sub">ambient bunnies hopping around the chat</div>
+      <button class="s-btn" id="bunny-toggle-btn" style="min-width:60px">Off</button>
     </div>
     <div class="s-sec">
       <div class="s-lbl">Nap Timer</div>
@@ -1018,7 +1027,7 @@ input[type=range]{accent-color:var(--primary)!important;}
     <div class="sc-row"><span class="sc-key">&#8984;&#x21E7;F</span><span class="sc-desc">Focus mode</span></div>
     <div class="sc-row"><span class="sc-key">&#8984;&#x21E7;S</span><span class="sc-desc">Session search</span></div>
     <div class="sc-row"><span class="sc-key">&#9673; Map</span><span class="sc-desc">Borgesian Map panel</span></div>
-    <div class="sc-row"><span class="sc-key">&#x1F9E0; Memory</span><span class="sc-desc">Memory browser panel</span></div>
+    <div class="sc-row"><span class="sc-key">Memory</span><span class="sc-desc">Memory browser panel</span></div>
     <button id="shortcuts-close-btn">Close</button>
   </div>
 </div>
@@ -1484,15 +1493,15 @@ function buildRow(role,content,idx){
   // Timestamp tooltip
   var ts=idx!=null?_msgTimestamps[idx]:null;
   if(!ts&&idx!=null&&!_renderingHistory){ts=new Date().toISOString();_msgTimestamps[idx]=ts;}
+  row.appendChild(bub);
   if(ts){
-    var tsEl=document.createElement("span");
+    var tsEl=document.createElement("div");
     var d=new Date(ts);
-    var hm=d.getHours().toString().padStart(2,"0")+":"+d.getMinutes().toString().padStart(2,"0");
+    var hm=d.toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
     tsEl.className="msg-ts";tsEl.textContent=hm;
     row.appendChild(tsEl);
     row.dataset.ts=new Date(ts).getTime();
   }
-  row.appendChild(bub);
   var acts=document.createElement("div");acts.className="msg-acts";
   var cpB=document.createElement("button");cpB.className="ma-btn";cpB.textContent="copy";
   cpB.onclick=function(e){
@@ -1573,6 +1582,7 @@ function buildRow(role,content,idx){
       upB.classList.add("active");dnB.classList.remove("active");
       fetch("/api/reinforce",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({positive:true})});
       toast("reinforcing","ok");
+      if(window._bunnyLiking)window._bunnyLiking();
     };
     dnB.onclick=function(e){
       e.stopPropagation();if(dnB.classList.contains("active"))return;
@@ -1771,22 +1781,7 @@ function finalizeStream(full,idx){
   var _mathBub=proper.querySelector(".bubble");
   if(_mathBub)setTimeout(function(){renderMath(_mathBub);},0);
   _updateRegenVisibility();
-  // ── Reaction buttons ──
-  (function(_proper,_clean){
-    var _reactions=document.createElement("div");_reactions.className="msg-reactions";
-    var _upBtn=document.createElement("button");_upBtn.className="react-btn react-up";_upBtn.title="Good response";_upBtn.textContent="\uD83D\uDC4D";
-    var _dnBtn=document.createElement("button");_dnBtn.className="react-btn react-down";_dnBtn.title="Poor response";_dnBtn.textContent="\uD83D\uDC4E";
-    function _fireReact(isUp){
-      _upBtn.classList.toggle("reacted",isUp);_dnBtn.classList.toggle("reacted",!isUp);
-      _upBtn.disabled=true;_dnBtn.disabled=true;
-      fetch("/api/react",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({rating:isUp?1:-1,response:_clean.slice(0,500)})});
-    }
-    _upBtn.onclick=function(e){e.stopPropagation();_fireReact(true);};
-    _dnBtn.onclick=function(e){e.stopPropagation();_fireReact(false);};
-    _reactions.appendChild(_upBtn);_reactions.appendChild(_dnBtn);
-    _proper.appendChild(_reactions);
-  })(proper,clean);
+  // Reaction buttons removed — redundant with ▲/▽ reinforce controls
   // ── Auto-title session on first reply (if still using timestamp title) ──
   if(history.length===2&&activeSid){
     var _firstUser=(history[0]&&history[0].role==="user"?history[0].content:"");
@@ -1900,37 +1895,44 @@ async function _refreshBehaviorBar(){
     var html='<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">';
     // ── Behavioral signals chart ──
     html+='<div style="flex:1;min-width:280px">';
-    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:6px" data-tip="Real-time keystroke and engagement signals captured from your typing patterns each turn">Your Behavioral Signals</div>';
-    html+='<div id="bb-signals" style="height:100px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
+    html+='<div style="font-size:.92em;color:var(--text2);font-weight:600;margin-bottom:8px" data-tip="Real-time keystroke and engagement signals captured from your typing patterns each turn. Tracks how you type, pause, edit, and engage so the model can adapt to your flow.">How You\'re Communicating</div>';
+    html+='<div id="bb-signals" style="height:180px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
     var modeCols={working:"#9ca3af",exploring:"#60a5fa",debating:"#c084fc",casual:"#4ade80",venting:"#f87171"};
-    html+='<div style="display:flex;gap:10px;margin-top:6px;font-size:.72em;flex-wrap:wrap">';
-    html+='<span style="color:'+(modeCols[cs.mode]||"#888")+'">'+( cs.mode||"\u2014")+'</span>';
-    html+='<span style="color:var(--text4)">valence: '+(cs.valence!=null?cs.valence.toFixed(1):"\u2014")+'</span>';
-    html+='<span style="color:var(--text4)">urgency: '+(cs.urgency!=null?cs.urgency.toFixed(1):"\u2014")+'</span>';
-    html+='<span style="color:var(--text4)">engagement: '+(cs.engagement!=null?cs.engagement.toFixed(1):"\u2014")+'</span>';
+    html+='<div style="display:flex;gap:14px;margin-top:8px;font-size:.8em;flex-wrap:wrap">';
+    var modeLabel=cs.mode?cs.mode.charAt(0).toUpperCase()+cs.mode.slice(1):"--";
+    html+='<span style="color:'+(modeCols[cs.mode]||"#888")+';font-weight:600">'+modeLabel+'</span>';
+    html+='<span style="color:var(--text3)">Mood: <strong style="color:var(--text2)">'+(cs.valence!=null?(cs.valence>0.3?"Positive":cs.valence<-0.3?"Negative":"Neutral"):"\u2014")+'</strong></span>';
+    html+='<span style="color:var(--text3)">Urgency: <strong style="color:var(--text2)">'+(cs.urgency!=null?(cs.urgency>0.7?"High":cs.urgency>0.3?"Medium":"Low"):"\u2014")+'</strong></span>';
+    html+='<span style="color:var(--text3)">Engagement: <strong style="color:var(--text2)">'+(cs.engagement!=null?(cs.engagement>0.7?"High":cs.engagement>0.3?"Medium":"Low"):"\u2014")+'</strong></span>';
     html+='</div>';
     var stats=hp;
     var statParts=[];
-    if(stats.typing_speed)statParts.push('avg speed: '+stats.typing_speed.mean.toFixed(1)+' cps');
-    if(stats.edit_ratio)statParts.push('avg edits: '+(stats.edit_ratio.mean*100).toFixed(0)+'%');
-    if(stats.median_pause_ms)statParts.push('avg pause: '+Math.round(stats.median_pause_ms.mean)+'ms');
-    if(stats.keystroke_count)statParts.push('avg keystrokes: '+Math.round(stats.keystroke_count.mean));
-    if(stats.typing_rhythm_variance)statParts.push('rhythm var: '+Math.round(stats.typing_rhythm_variance.mean));
-    html+='<div style="font-size:.68em;color:var(--text4);margin-top:3px">'+(statParts.length?statParts.join(' \u00b7 '):'No data yet \u2014 keep typing')+'</div>';
+    if(stats.typing_speed)statParts.push('Typing: '+stats.typing_speed.mean.toFixed(1)+' chars/sec');
+    if(stats.edit_ratio)statParts.push('Revisions: '+(stats.edit_ratio.mean*100).toFixed(0)+'%');
+    if(stats.median_pause_ms)statParts.push('Think time: '+Math.round(stats.median_pause_ms.mean)+'ms');
+    if(stats.keystroke_count)statParts.push('Keystrokes: '+Math.round(stats.keystroke_count.mean));
+    html+='<div style="font-size:.75em;color:var(--text4);margin-top:4px">'+(statParts.length?statParts.join(' \u00b7 '):'No data yet \u2014 keep typing')+'</div>';
     html+='</div>';
     // ── OCEAN radars ──
-    html+='<div style="flex:0 0 320px;display:flex;gap:12px">';
-    html+='<div style="flex:1"><div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;text-align:center" data-tip="Big Five personality radar for your messages this session — Openness, Conscientiousness, Extraversion, Agreeableness, Neuroticism">You</div>';
-    html+='<div id="bb-ocean-user" style="height:130px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div></div>';
-    html+='<div style="flex:1"><div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;text-align:center" data-tip="Big Five personality radar for the model\'s responses — mirrors and adapts to your conversational style">Model</div>';
-    html+='<div id="bb-ocean-model" style="height:130px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div></div>';
+    html+='<div style="flex:0 0 380px;display:flex;gap:14px">';
+    html+='<div style="flex:1"><div style="font-size:.82em;color:var(--text2);letter-spacing:.3px;margin-bottom:6px;text-align:center;font-weight:600" data-tip="Big Five personality radar for your messages this session — Openness, Conscientiousness, Extraversion, Agreeableness, Neuroticism. This builds over time as you chat.">Your Personality</div>';
+    html+='<div id="bb-ocean-user" style="height:180px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div></div>';
+    html+='<div style="flex:1"><div style="font-size:.82em;color:var(--text2);letter-spacing:.3px;margin-bottom:6px;text-align:center;font-weight:600" data-tip="Big Five personality radar for the model\'s responses — mirrors and adapts to your conversational style over time">Model Personality</div>';
+    html+='<div id="bb-ocean-model" style="height:180px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div></div>';
     html+='</div>';
     // ── Mood + dance ──
-    html+='<div style="flex:0 0 180px">';
-    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Dominant emotional tone of the conversation — classified from message sentiment and engagement patterns">Session Mood</div>';
-    html+='<div id="bb-mood" style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 8px"></div>';
+    html+='<div style="flex:0 0 220px">';
+    html+='<div style="font-size:.82em;color:var(--text2);letter-spacing:.3px;margin-bottom:6px;font-weight:600" data-tip="Dominant emotional tone of the conversation — classified from message sentiment and engagement patterns">Conversation Mood</div>';
+    html+='<div id="bb-mood" style="background:rgba(255,255,255,0.02);border-radius:4px;padding:8px 10px"></div>';
     if(d.ocean_dance){
-      html+='<div style="font-size:.72em;color:var(--text3);margin-top:8px;text-align:center" data-tip="How well the model\'s OCEAN profile mirrors yours — 100% = perfect personality synchronization">Dance coherence: '+(d.ocean_dance.coherence*100).toFixed(0)+'%</div>';
+      var danceVal=(d.ocean_dance.coherence*100).toFixed(0);
+      var danceColor=d.ocean_dance.coherence>0.7?"#4ade80":d.ocean_dance.coherence>0.4?"#fbbf24":"#f87171";
+      var danceLabel=d.ocean_dance.coherence>0.8?"Highly in sync":d.ocean_dance.coherence>0.6?"Well matched":d.ocean_dance.coherence>0.4?"Loosely matched":"Divergent";
+      html+='<div style="margin-top:10px;background:rgba(255,255,255,0.02);border-radius:4px;padding:8px 10px" data-tip="How closely the model\'s personality profile matches yours right now. When this is high, the model is mirroring your communication style. When low, the model is responding differently than how you write — this can be intentional (e.g., you\'re casual but need a formal answer).">';
+      html+='<div style="font-size:.78em;color:var(--text3);margin-bottom:4px">Personality Sync</div>';
+      html+='<div style="font-size:1.4em;font-weight:600;color:'+danceColor+';font-family:var(--mono)">'+danceVal+'%</div>';
+      html+='<div style="font-size:.78em;color:'+danceColor+';margin-top:2px">'+danceLabel+'</div>';
+      html+='</div>';
     }
     html+='</div>';
     html+='</div>';
@@ -1942,36 +1944,35 @@ async function _refreshBehaviorBar(){
     var fwc=ins.framework_confidence;
     var coupled=ins.coupled_trace||{};
     html+='<div style="margin-top:14px;border-top:1px solid var(--border2);padding-top:12px">';
-    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:8px" data-tip="Internal model signals — adapter learning, routing decisions, and drift tracking">Model Behavior</div>';
+    html+='<div style="font-size:.92em;color:var(--text2);font-weight:600;margin-bottom:10px" data-tip="What the model is doing under the hood — learning from your feedback, correcting itself, and tracking how much it\'s changed from its starting point.">What The Model Is Doing</div>';
     // ── Hessian Trace sparkline ──
     html+='<div style="margin-bottom:10px">';
-    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="How much the model\'s weights are changing — high values mean it\'s learning something new, low means stable. Green = LoRA adapter, Red = anti-adapter correcting drift.">Hessian Trace (curvature)</div>';
-    html+='<div id="bb-trace-chart" style="height:70px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
+    html+='<div style="font-size:.82em;color:var(--text3);letter-spacing:.3px;margin-bottom:6px" data-tip="How much the model\'s weights are changing turn by turn. Spikes mean it\'s learning something new from you. Flat means it\'s settled. Green = actively learning, Red = correcting a drift.">Learning Activity</div>';
+    html+='<div id="bb-trace-chart" style="height:130px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
     html+='</div>';
     // ── Drift sparkline ──
     html+='<div style="margin-bottom:10px">';
-    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="How far the model\'s responses have drifted from its baseline. Above 0.6 = significant divergence, may trigger anti-adapter correction.">Semantic Drift</div>';
-    html+='<div id="bb-drift-chart" style="height:50px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
+    html+='<div style="font-size:.82em;color:var(--text3);letter-spacing:.3px;margin-bottom:6px" data-tip="How far the model\'s responses have wandered from how it started this session. If it crosses the red dashed line, it triggers a self-correction.">Response Drift</div>';
+    html+='<div id="bb-drift-chart" style="height:110px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
     html+='</div>';
     // ── SnobLine status badges ──
     html+='<div style="margin-bottom:10px">';
-    html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Routes between LoRA (learning) and Anti (correcting) adapters based on trace curvature. Pathological = consecutive bad traces. Anchor = session baseline.">SnobLine Router</div>';
-    html+='<div style="display:flex;gap:8px;flex-wrap:wrap;font-size:.72em;font-family:var(--mono)">';
+    html+='<div style="font-size:.82em;color:var(--text3);letter-spacing:.3px;margin-bottom:6px" data-tip="The routing system that decides whether the model should keep learning (green) or correct itself (red). Tracks consecutive bad turns and anchors to a session baseline.">Adapter Routing</div>';
+    html+='<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:.78em;font-family:var(--font);align-items:center">';
     var modeCol=snob.mode==="anti"?"#f87171":snob.mode==="lora"?"#4ade80":"#9ca3af";
-    html+='<span style="color:'+modeCol+';border:1px solid '+modeCol+'33;background:'+modeCol+'11;padding:2px 8px;border-radius:10px">'+snob.mode+'</span>';
-    html+='<span style="color:var(--text4)">patho: '+snob.consec_patho+'</span>';
-    html+='<span style="color:var(--text4)">anti: '+snob.anti_count+'</span>';
-    html+='<span style="color:var(--text4)">switches: '+snob.switches+'</span>';
-    if(snob.session_anchor!=null)html+='<span style="color:var(--text4)">anchor: '+snob.session_anchor.toFixed(0)+'</span>';
-    if(snob.model_low!=null)html+='<span style="color:var(--text4)">low: '+snob.model_low+'</span>';
-    if(snob.model_high!=null)html+='<span style="color:var(--text4)">high: '+snob.model_high+'</span>';
+    var modeLabel=snob.mode==="anti"?"Correcting":snob.mode==="lora"?"Learning":"Idle";
+    html+='<span style="color:'+modeCol+';border:1px solid '+modeCol+'33;background:'+modeCol+'11;padding:3px 10px;border-radius:10px;font-weight:600">'+modeLabel+'</span>';
+    html+='<span style="color:var(--text3)">Bad turns in a row: <strong style="color:var(--text2)">'+snob.consec_patho+'</strong></span>';
+    html+='<span style="color:var(--text3)">Corrections: <strong style="color:var(--text2)">'+snob.anti_count+'</strong></span>';
+    html+='<span style="color:var(--text3)">Mode switches: <strong style="color:var(--text2)">'+snob.switches+'</strong></span>';
     html+='</div>';
     // Switch log timeline
     if(snob.switch_log&&snob.switch_log.length>0){
       html+='<div style="margin-top:4px;font-size:.68em;color:var(--text4);font-family:var(--mono)">';
       snob.switch_log.forEach(function(sw){
         var c=sw.to==="anti"?"#f87171":"#4ade80";
-        html+='<span style="color:'+c+'">t'+sw.turn+'\u2192'+sw.to+'</span> ';
+        var swLabel=sw.to==="anti"?"Correcting":"Learning";
+        html+='<span style="color:'+c+'">Turn '+sw.turn+' \u2192 '+swLabel+'</span> ';
       });
       html+='</div>';
     }
@@ -1979,8 +1980,8 @@ async function _refreshBehaviorBar(){
     // ── Mode timeline (lora/anti across turns) ──
     if(th.length>1){
       html+='<div style="margin-bottom:10px">';
-      html+='<div style="font-size:.72em;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Which adapter was active each turn — green = LoRA (learning forward), red = anti-adapter (correcting backward)">Adapter Mode Timeline</div>';
-      html+='<div id="bb-mode-timeline" style="height:20px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden;display:flex">';
+      html+='<div style="font-size:.82em;color:var(--text3);letter-spacing:.3px;margin-bottom:6px" data-tip="Visual timeline of each turn — green = the model was actively learning from you, red = it was correcting itself. A healthy session has mostly green.">Learning vs Correcting Timeline</div>';
+      html+='<div id="bb-mode-timeline" style="height:36px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden;display:flex">';
       var tLen=th.length;
       th.forEach(function(t){
         var pct=(100/tLen).toFixed(2);
@@ -1995,17 +1996,17 @@ async function _refreshBehaviorBar(){
     if(fwc){
       var confCol=fwc.overall>0.7?"#4ade80":fwc.overall>0.4?"#fbbf24":"#f87171";
       html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
-      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px" data-tip="Overall confidence in the coupled manifold framework — combines trace stability, drift, flattery resistance, and dance coherence into one score">Framework Confidence</div>';
+      html+='<div style="color:var(--text3);letter-spacing:.3px;font-size:.9em;margin-bottom:4px;font-weight:600" data-tip="Overall health score — combines learning stability, drift, sycophancy resistance, and personality sync into one number. Higher is better.">Overall Health</div>';
       html+='<div style="font-size:1.6em;color:'+confCol+';font-weight:600;font-family:var(--mono)">'+(fwc.overall*100).toFixed(0)+'%</div>';
       if(fwc.components){
         var comps=fwc.components;
         var compParts=[];
-        if(comps.trace!=null)compParts.push('trace:'+comps.trace.toFixed(2));
-        if(comps.drift!=null)compParts.push('drift:'+comps.drift.toFixed(2));
-        if(comps.flattery!=null)compParts.push('flattery:'+comps.flattery.toFixed(2));
-        if(comps.stability!=null)compParts.push('stability:'+comps.stability.toFixed(2));
-        if(comps.dance!=null)compParts.push('dance:'+comps.dance.toFixed(2));
-        html+='<div style="color:var(--text4);margin-top:2px;font-family:var(--mono)">'+compParts.join(' \u00b7 ')+'</div>';
+        if(comps.trace!=null)compParts.push('Learning: '+Math.round(comps.trace*100)+'%');
+        if(comps.drift!=null)compParts.push('Consistency: '+Math.round(comps.drift*100)+'%');
+        if(comps.flattery!=null)compParts.push('Honesty: '+Math.round(comps.flattery*100)+'%');
+        if(comps.stability!=null)compParts.push('Stability: '+Math.round(comps.stability*100)+'%');
+        if(comps.dance!=null)compParts.push('Sync: '+Math.round(comps.dance*100)+'%');
+        html+='<div style="color:var(--text4);margin-top:3px;font-size:.85em">'+compParts.join(' \u00b7 ')+'</div>';
       }
       html+='</div>';
     }
@@ -2013,22 +2014,22 @@ async function _refreshBehaviorBar(){
     var flat=ins.flattery_score||0;
     var flatCol=flat>0.8?"#f87171":flat>0.5?"#fbbf24":"#4ade80";
     html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:100px">';
-    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px" data-tip="Sycophancy detection — measures agreement bias. Above 0.5 = elevated (the model may be agreeing too readily). Above 0.8 = actively detected and being corrected.">Flattery</div>';
+    html+='<div style="color:var(--text3);letter-spacing:.3px;font-size:.9em;margin-bottom:4px;font-weight:600" data-tip="Is the model just agreeing with you? This measures sycophancy — whether responses are too agreeable rather than honest. Low is good.">Sycophancy Check</div>';
     html+='<div style="font-size:1.6em;color:'+flatCol+';font-weight:600;font-family:var(--mono)">'+flat.toFixed(2)+'</div>';
-    html+='<div style="color:var(--text4);margin-top:2px">'+(flat>0.8?"sycophancy detected":flat>0.5?"elevated":"normal")+'</div>';
+    html+='<div style="color:var(--text4);margin-top:2px;font-size:.9em">'+(flat>0.8?"Too agreeable — correcting":flat>0.5?"Slightly agreeable":"Honest and direct")+'</div>';
     html+='</div>';
     // Drift
     var drift=ins.drift||0;
     var driftCol=drift>0.6?"#f87171":drift>0.3?"#fbbf24":"#4ade80";
     html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:100px">';
-    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px" data-tip="Cosine distance between current response embeddings and baseline — tracks how far the model has wandered from its starting personality">Drift</div>';
+    html+='<div style="color:var(--text3);letter-spacing:.3px;font-size:.9em;margin-bottom:4px;font-weight:600" data-tip="How far the model has wandered from its starting personality this session. Low = consistent, high = the model\'s tone is shifting.">Current Drift</div>';
     html+='<div style="font-size:1.6em;color:'+driftCol+';font-weight:600;font-family:var(--mono)">'+drift.toFixed(3)+'</div>';
-    html+='<div style="color:var(--text4);margin-top:2px">'+(drift>0.6?"high divergence":drift>0.3?"drifting":"aligned")+'</div>';
+    html+='<div style="color:var(--text4);margin-top:2px;font-size:.9em">'+(drift>0.6?"Personality shifted significantly":drift>0.3?"Tone is shifting a bit":"Consistent with baseline")+'</div>';
     html+='</div>';
     // Coupled trace nudge
     if(coupled.nudge){
       html+='<div style="background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px;min-width:140px">';
-      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-size:.9em;margin-bottom:4px" data-tip="Feedback from the coupled trace system — nudges the model based on combined user-model signal dynamics (engagement × curvature)">Coupled Trace</div>';
+      html+='<div style="color:var(--text3);letter-spacing:.3px;font-size:.9em;margin-bottom:4px;font-weight:600" data-tip="Real-time feedback combining your engagement signals with the model\'s learning curve — this is what steers the model\'s next move.">Live Feedback</div>';
       html+='<div style="color:var(--text2);font-family:var(--mono)">'+coupled.nudge+'</div>';
       if(coupled.detail)html+='<div style="color:var(--text4);margin-top:2px;font-size:.9em">'+coupled.detail+'</div>';
       html+='</div>';
@@ -2036,8 +2037,8 @@ async function _refreshBehaviorBar(){
     html+='</div>';
     // ── Sampling state ──
     if(ins.sampling){
-      html+='<div style="font-size:.68em;color:var(--text4);font-family:var(--mono)" data-tip="Current generation parameters — turn count, temperature (randomness), top_p (nucleus sampling cutoff), and flattery correction streak if active">turn: '+ins.turn_count+' \u00b7 temp: '+ins.sampling.temp.toFixed(2)+' \u00b7 top_p: '+ins.sampling.top_p.toFixed(2);
-      if(snob.consec_flattery>0)html+=' \u00b7 flattery streak: '+snob.consec_flattery;
+      html+='<div style="font-size:.75em;color:var(--text4);font-family:var(--font)" data-tip="Current generation parameters — turn count, temperature (how creative/random), and how many turns the model has been over-agreeing if any">Turn '+ins.turn_count+' \u00b7 Creativity: '+ins.sampling.temp.toFixed(2)+' \u00b7 Focus: '+ins.sampling.top_p.toFixed(2);
+      if(snob.consec_flattery>0)html+=' \u00b7 Agreeing streak: '+snob.consec_flattery+' turns';
       html+='</div>';
     }
     html+='</div>';
@@ -2045,18 +2046,18 @@ async function _refreshBehaviorBar(){
     // CO-EVOLUTION PROFILE — how user + instance are adapting to each other
     // ══════════════════════════════════════════════════════════════════════
     html+='<div style="margin-top:14px;border-top:1px solid var(--border2);padding-top:12px">';
-    html+='<div style="font-size:.82em;color:var(--text2);font-weight:600;margin-bottom:8px" data-tip="Tracks how this instance adapts to your conversational style over time — response length calibration, register matching, and interaction dynamics">Co-evolution Profile</div>';
+    html+='<div style="font-size:.92em;color:var(--text2);font-weight:600;margin-bottom:10px" data-tip="How this model instance has adapted to you over time — it calibrates response length, tone, search habits, and conversational register to match your style.">How We\'ve Adapted To Each Other</div>';
     html+='<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:.72em">';
     // User typing profile
     html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
-    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Aggregate statistics about your conversation patterns across sessions">Your Profile</div>';
+    html+='<div style="color:var(--text3);letter-spacing:.3px;margin-bottom:4px;font-weight:600" data-tip="Aggregate statistics about your conversation patterns across sessions — turns, sessions, and how much the model has to work with">Your History</div>';
     if(sp.total_turns!=null)html+='<div>Turns: '+sp.total_turns+'</div>';
     if(sp.sessions!=null)html+='<div>Sessions: '+sp.sessions+'</div>';
     if(sp.maturity!=null)html+='<div>Maturity: <span style="color:'+(sp.maturity>0.7?"#4ade80":sp.maturity>0.3?"#fbbf24":"var(--text3)")+'">'+Math.round(sp.maturity*100)+'%</span></div>';
     html+='</div>';
     // Instance response profile
     html+='<div style="flex:1;min-width:180px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
-    html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="How the model has calibrated its responses to match your style — length, register, search habits, and dance coherence">Instance Profile</div>';
+    html+='<div style="color:var(--text3);letter-spacing:.3px;margin-bottom:4px;font-weight:600" data-tip="How the model has calibrated its responses to match your style — length, register, search habits, and personality sync">Model\'s Learned Style</div>';
     if(sp.response_length_avg!=null)html+='<div>Avg response: '+sp.response_length_avg+' chars</div>';
     if(sp.response_length_range)html+='<div>Range (2\u03c3): '+sp.response_length_range+'</div>';
     if(sp.dominant_register)html+='<div>Register: '+sp.dominant_register+'</div>';
@@ -2069,13 +2070,13 @@ async function _refreshBehaviorBar(){
     var mpKeys=Object.keys(mp);
     if(mpKeys.length){
       html+='<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.02);border-radius:4px;padding:6px 10px">';
-      html+='<div style="color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px" data-tip="Observed interaction modes across your conversations — how often you work, explore, debate, vent, or chat casually">Mode Distribution</div>';
+      html+='<div style="color:var(--text3);letter-spacing:.3px;margin-bottom:4px;font-weight:600" data-tip="How you tend to use the model — working, exploring, debating, venting, or casual chatting. Builds up across conversations.">How You Use This</div>';
       mpKeys.forEach(function(k){html+='<div>'+k+': '+mp[k]+'</div>';});
       html+='</div>';
     }
     html+='</div>';
     // Co-evolution chart — response length sparkline
-    html+='<div id="bb-coevo-chart" style="height:60px;margin-top:8px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
+    html+='<div id="bb-coevo-chart" style="height:130px;margin-top:8px;background:rgba(255,255,255,0.02);border-radius:4px;overflow:hidden"></div>';
     html+='</div>';
     bb.innerHTML=html;
     // Render charts into the new containers
@@ -2092,34 +2093,41 @@ async function _refreshBehaviorBar(){
 function _renderBBTrace(traceHist){
   var el=document.getElementById("bb-trace-chart");if(!el)return;
   var data=traceHist.filter(function(t){return t.trace!=null;});
-  if(data.length<2){el.innerHTML='<div style="text-align:center;padding:22px 0;color:var(--text4);font-size:.82em">Need more turns</div>';return;}
-  var w=el.offsetWidth||400,h=70;
+  if(data.length<2){el.innerHTML='<div style="text-align:center;padding:40px 0;color:var(--text4);font-size:.9em">Need more turns</div>';return;}
+  var w=el.offsetWidth||400,h=el.offsetHeight||130;
+  var topPad=30,botPad=8;
   var vals=data.map(function(t){return t.trace;});
   var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);
   var range=mx-mn||1;
-  // Draw zero line and trace curve
   var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
+  // Legend
+  svg+='<circle cx="6" cy="10" r="4" fill="#4ade80" opacity="0.85"/>';
+  svg+='<text x="14" y="14" fill="#4ade80" font-size="11" font-family="var(--font)">Learning</text>';
+  svg+='<circle cx="90" cy="10" r="4" fill="#f87171" opacity="0.85"/>';
+  svg+='<text x="98" y="14" fill="#f87171" font-size="11" font-family="var(--font)">Correcting</text>';
+  // Y-axis labels
+  svg+='<text x="4" y="'+(topPad+2)+'" fill="var(--text4)" font-size="10" font-family="var(--mono)">'+mx.toFixed(0)+'</text>';
+  svg+='<text x="4" y="'+(h-botPad)+'" fill="var(--text4)" font-size="10" font-family="var(--mono)">'+mn.toFixed(0)+'</text>';
+  // Gridlines
+  for(var g=0;g<=4;g++){var gy=topPad+(h-topPad-botPad)*(g/4);svg+='<line x1="30" y1="'+gy.toFixed(1)+'" x2="'+w+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>';}
   // Zero line
-  var zeroY=h-((0-mn)/range)*(h-12)-6;
-  if(zeroY>4&&zeroY<h-4)svg+='<line x1="0" y1="'+zeroY.toFixed(1)+'" x2="'+w+'" y2="'+zeroY.toFixed(1)+'" stroke="#555" stroke-width="0.5" stroke-dasharray="3,3"/>';
-  // Colored segments: green above 0, red below 0
+  var zeroY=h-botPad-((0-mn)/range)*(h-topPad-botPad);
+  if(zeroY>topPad&&zeroY<h-botPad)svg+='<line x1="30" y1="'+zeroY.toFixed(1)+'" x2="'+w+'" y2="'+zeroY.toFixed(1)+'" stroke="#555" stroke-width="0.5" stroke-dasharray="3,3"/>';
+  // Colored segments
   for(var i=0;i<data.length-1;i++){
-    var x1=(i/(data.length-1))*w,x2=((i+1)/(data.length-1))*w;
-    var y1=h-((vals[i]-mn)/range)*(h-12)-6,y2=h-((vals[i+1]-mn)/range)*(h-12)-6;
+    var x1=30+(i/(data.length-1))*(w-30),x2=30+((i+1)/(data.length-1))*(w-30);
+    var y1=h-botPad-((vals[i]-mn)/range)*(h-topPad-botPad),y2=h-botPad-((vals[i+1]-mn)/range)*(h-topPad-botPad);
     var c=(vals[i]+vals[i+1])/2>=0?"#4ade80":"#f87171";
     if(data[i].mode==="anti")c="#f87171";
-    svg+='<line x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+x2.toFixed(1)+'" y2="'+y2.toFixed(1)+'" stroke="'+c+'" stroke-width="1.5" opacity="0.85"/>';
+    svg+='<line x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+x2.toFixed(1)+'" y2="'+y2.toFixed(1)+'" stroke="'+c+'" stroke-width="2" opacity="0.85"/>';
   }
-  // Dots at each point
+  // Dots
   data.forEach(function(t,i){
-    var x=(i/(data.length-1))*w;
-    var y=h-((t.trace-mn)/range)*(h-12)-6;
+    var x=30+(i/(data.length-1))*(w-30);
+    var y=h-botPad-((t.trace-mn)/range)*(h-topPad-botPad);
     var c=t.mode==="anti"?"#f87171":"#4ade80";
-    svg+='<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="2.5" fill="'+c+'"/>';
+    svg+='<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="3" fill="'+c+'"/>';
   });
-  // Labels
-  svg+='<text x="4" y="10" fill="var(--text4)" font-size="8" font-family="var(--mono)">'+mx.toFixed(0)+'</text>';
-  svg+='<text x="4" y="'+(h-2)+'" fill="var(--text4)" font-size="8" font-family="var(--mono)">'+mn.toFixed(0)+'</text>';
   svg+='</svg>';
   el.innerHTML=svg;
 }
@@ -2127,17 +2135,32 @@ function _renderBBTrace(traceHist){
 function _renderBBDrift(traceHist){
   var el=document.getElementById("bb-drift-chart");if(!el)return;
   var data=traceHist.filter(function(t){return t.drift!=null&&t.drift>=0;});
-  if(data.length<2){el.innerHTML='<div style="text-align:center;padding:12px 0;color:var(--text4);font-size:.82em">Need more turns</div>';return;}
-  var w=el.offsetWidth||400,h=50;
+  if(data.length<2){el.innerHTML='<div style="text-align:center;padding:35px 0;color:var(--text4);font-size:.9em">Need more turns</div>';return;}
+  var w=el.offsetWidth||400,h=el.offsetHeight||110;
+  var topPad=28,botPad=8;
   var vals=data.map(function(t){return t.drift;});
   var mx=Math.max.apply(null,vals)||1;
   var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
-  // Fill area
-  var pts=vals.map(function(v,i){var x=(i/(vals.length-1))*w;var y=h-(v/mx)*(h-10)-4;return x.toFixed(1)+","+y.toFixed(1);});
-  svg+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="#fbbf24" stroke-width="1.3" opacity="0.8"/>';
+  // Legend
+  svg+='<circle cx="6" cy="10" r="4" fill="#fbbf24" opacity="0.85"/>';
+  svg+='<text x="14" y="14" fill="#fbbf24" font-size="11" font-family="var(--font)">Drift Distance</text>';
+  svg+='<text x="130" y="14" fill="#f87171" font-size="10" font-family="var(--font)" opacity="0.7">- - - Danger Threshold (0.6)</text>';
+  // Gridlines
+  for(var g=0;g<=4;g++){var gy=topPad+(h-topPad-botPad)*(g/4);svg+='<line x1="0" y1="'+gy.toFixed(1)+'" x2="'+w+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>';}
+  // Fill area under curve
+  var pts=vals.map(function(v,i){var x=(i/(vals.length-1))*w;var y=h-botPad-(v/mx)*(h-topPad-botPad);return x.toFixed(1)+","+y.toFixed(1);});
+  svg+='<polygon points="0,'+(h-botPad)+' '+pts.join(" ")+' '+w+','+(h-botPad)+'" fill="#fbbf24" opacity="0.08"/>';
+  svg+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="#fbbf24" stroke-width="2" opacity="0.85"/>';
+  // Dots
+  vals.forEach(function(v,i){
+    var x=(i/(vals.length-1))*w;
+    var y=h-botPad-(v/mx)*(h-topPad-botPad);
+    var c=v>0.6?"#f87171":v>0.3?"#fbbf24":"#4ade80";
+    svg+='<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="3" fill="'+c+'"/>';
+  });
   // Danger threshold line at 0.6
-  var threshY=h-(0.6/mx)*(h-10)-4;
-  if(threshY>2&&threshY<h-2)svg+='<line x1="0" y1="'+threshY.toFixed(1)+'" x2="'+w+'" y2="'+threshY.toFixed(1)+'" stroke="#f87171" stroke-width="0.5" stroke-dasharray="3,3" opacity="0.5"/>';
+  var threshY=h-botPad-(0.6/mx)*(h-topPad-botPad);
+  if(threshY>topPad&&threshY<h-botPad)svg+='<line x1="0" y1="'+threshY.toFixed(1)+'" x2="'+w+'" y2="'+threshY.toFixed(1)+'" stroke="#f87171" stroke-width="1" stroke-dasharray="4,4" opacity="0.6"/>';
   svg+='</svg>';
   el.innerHTML=svg;
 }
@@ -2145,25 +2168,40 @@ function _renderBBDrift(traceHist){
 function _renderBBCoevo(sp){
   var el=document.getElementById("bb-coevo-chart");if(!el)return;
   var snaps=sp.turn_snapshots||[];
-  if(snaps.length<2){el.innerHTML='<div style="text-align:center;padding:18px 0;color:var(--text4);font-size:.82em">Need more turns for co-evolution chart</div>';return;}
-  var w=el.offsetWidth||400,h=60;
+  if(snaps.length<2){el.innerHTML='<div style="text-align:center;padding:40px 0;color:var(--text4);font-size:.9em">Need more turns for co-evolution chart</div>';return;}
+  var w=el.offsetWidth||400,h=el.offsetHeight||130;
+  var topPad=28,botPad=8;
   var maxR=Math.max.apply(null,snaps.map(function(s){return s.resp_len||0;}))||1;
   var maxU=Math.max.apply(null,snaps.map(function(s){return s.user_len||0;}))||1;
   var maxV=Math.max(maxR,maxU);
   var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
-  var pts=snaps.map(function(s,i){var x=(i/(snaps.length-1))*w;var y=h-(s.resp_len/maxV)*h*0.85-4;return x.toFixed(1)+","+y.toFixed(1);});
-  svg+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="var(--accent,#6ee7b7)" stroke-width="1.3" opacity="0.8"/>';
-  var upts=snaps.map(function(s,i){var x=(i/(snaps.length-1))*w;var y=h-(s.user_len/maxV)*h*0.85-4;return x.toFixed(1)+","+y.toFixed(1);});
-  svg+='<polyline points="'+upts.join(" ")+'" fill="none" stroke="var(--text3,#666)" stroke-width="1" opacity="0.5"/>';
-  svg+='<text x="4" y="10" fill="var(--accent,#6ee7b7)" font-size="8" font-family="var(--mono)">response</text>';
-  svg+='<text x="4" y="20" fill="var(--text3,#666)" font-size="8" font-family="var(--mono)">your input</text>';
+  // Legend
+  svg+='<circle cx="6" cy="10" r="4" fill="var(--accent,#6ee7b7)" opacity="0.85"/>';
+  svg+='<text x="14" y="14" fill="var(--accent,#6ee7b7)" font-size="11" font-family="var(--font)">Model Response Length</text>';
+  svg+='<circle cx="180" cy="10" r="4" fill="var(--text3,#666)" opacity="0.6"/>';
+  svg+='<text x="188" y="14" fill="var(--text3,#666)" font-size="11" font-family="var(--font)">Your Input Length</text>';
+  // Gridlines
+  for(var g=0;g<=4;g++){var gy=topPad+(h-topPad-botPad)*(g/4);svg+='<line x1="0" y1="'+gy.toFixed(1)+'" x2="'+w+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>';}
+  // Fill areas
+  var pts=snaps.map(function(s,i){var x=(i/(snaps.length-1))*w;var y=h-botPad-(s.resp_len/maxV)*(h-topPad-botPad);return x.toFixed(1)+","+y.toFixed(1);});
+  svg+='<polygon points="0,'+(h-botPad)+' '+pts.join(" ")+' '+w+','+(h-botPad)+'" fill="var(--accent,#6ee7b7)" opacity="0.06"/>';
+  svg+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="var(--accent,#6ee7b7)" stroke-width="2" opacity="0.85"/>';
+  var upts=snaps.map(function(s,i){var x=(i/(snaps.length-1))*w;var y=h-botPad-(s.user_len/maxV)*(h-topPad-botPad);return x.toFixed(1)+","+y.toFixed(1);});
+  svg+='<polyline points="'+upts.join(" ")+'" fill="none" stroke="var(--text3,#666)" stroke-width="1.5" opacity="0.55"/>';
+  // Dots on response line
+  snaps.forEach(function(s,i){
+    var x=(i/(snaps.length-1))*w;
+    var y=h-botPad-(s.resp_len/maxV)*(h-topPad-botPad);
+    svg+='<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="2.5" fill="var(--accent,#6ee7b7)" opacity="0.7"/>';
+  });
   svg+='</svg>';
   el.innerHTML=svg;
 }
 function _renderBBSignals(sigs){
   var el=document.getElementById("bb-signals");if(!el)return;
-  if(sigs.length<2){el.innerHTML='<div style="text-align:center;padding:35px 0;color:var(--text4);font-size:.82em">Need more turns — keep talking</div>';return;}
-  var w=el.offsetWidth||300,h=100;
+  if(sigs.length<2){el.innerHTML='<div style="text-align:center;padding:60px 0;color:var(--text4);font-size:.9em">Need more turns — keep talking</div>';return;}
+  var w=el.offsetWidth||300,h=el.offsetHeight||180;
+  var topPad=32,botPad=8;
   // Normalize each metric to 0-1 for overlaid sparklines
   function norm(arr){var mx=Math.max.apply(null,arr)||1;return arr.map(function(v){return v/mx;});}
   var speeds=norm(sigs.map(function(s){return s.typing_speed||0;}));
@@ -2172,21 +2210,25 @@ function _renderBBSignals(sigs){
   var valences=sigs.map(function(s){return(s.valence||0)/2+0.5;});// -1..1 → 0..1
   var engagements=sigs.map(function(s){return s.engagement||0.5;});
   function line(data,color,opacity){
-    var pts=data.map(function(v,i){var x=(i/(data.length-1))*w;var y=h-v*h*0.85-6;return x.toFixed(1)+","+y.toFixed(1);});
-    return'<polyline points="'+pts.join(" ")+'" fill="none" stroke="'+color+'" stroke-width="1.3" opacity="'+(opacity||0.7)+'"/>';
+    var pts=data.map(function(v,i){var x=(i/(data.length-1))*w;var y=h-botPad-v*(h-topPad-botPad);return x.toFixed(1)+","+y.toFixed(1);});
+    return'<polyline points="'+pts.join(" ")+'" fill="none" stroke="'+color+'" stroke-width="1.5" opacity="'+(opacity||0.7)+'"/>';
   }
   var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
-  svg+=line(speeds,"#60a5fa",0.8);     // blue = typing speed
-  svg+=line(edits,"#f87171",0.7);      // red = edit ratio (hesitation)
-  svg+=line(pauses,"#fbbf24",0.6);     // amber = pause length
-  svg+=line(valences,"#4ade80",0.6);   // green = emotional valence
-  svg+=line(engagements,"#c084fc",0.6);// purple = engagement
-  // Legend
-  svg+='<text x="4" y="10" fill="#60a5fa" font-size="8" font-family="var(--mono)">speed</text>';
-  svg+='<text x="40" y="10" fill="#f87171" font-size="8" font-family="var(--mono)">edits</text>';
-  svg+='<text x="72" y="10" fill="#fbbf24" font-size="8" font-family="var(--mono)">pauses</text>';
-  svg+='<text x="112" y="10" fill="#4ade80" font-size="8" font-family="var(--mono)">valence</text>';
-  svg+='<text x="160" y="10" fill="#c084fc" font-size="8" font-family="var(--mono)">engagement</text>';
+  // Gridlines for readability
+  for(var g=0;g<=4;g++){var gy=topPad+(h-topPad-botPad)*(g/4);svg+='<line x1="0" y1="'+gy.toFixed(1)+'" x2="'+w+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>';}
+  svg+=line(speeds,"#60a5fa",0.85);
+  svg+=line(edits,"#f87171",0.75);
+  svg+=line(pauses,"#fbbf24",0.65);
+  svg+=line(valences,"#4ade80",0.65);
+  svg+=line(engagements,"#c084fc",0.65);
+  // Legend — spaced out, larger, above chart area
+  var legends=[{label:"Typing Speed",color:"#60a5fa"},{label:"Edits",color:"#f87171"},{label:"Pauses",color:"#fbbf24"},{label:"Mood",color:"#4ade80"},{label:"Engagement",color:"#c084fc"}];
+  var lx=6;
+  legends.forEach(function(l){
+    svg+='<circle cx="'+lx+'" cy="10" r="4" fill="'+l.color+'" opacity="0.85"/>';
+    svg+='<text x="'+(lx+8)+'" y="14" fill="'+l.color+'" font-size="11" font-family="var(--font)">'+l.label+'</text>';
+    lx+=l.label.length*7+22;
+  });
   svg+='</svg>';
   el.innerHTML=svg;
 }
@@ -2194,7 +2236,7 @@ function _renderBBMood(moodData){
   var el=document.getElementById("bb-mood");if(!el)return;
   var dist=moodData&&moodData.distribution?moodData.distribution:{};
   var moods=Object.keys(dist);
-  if(moods.length===0){el.innerHTML='<div style="color:var(--text4);font-size:.72em">No mood data yet</div>';return;}
+  if(moods.length===0){el.innerHTML='<div style="color:var(--text4);font-size:.82em">No mood data yet</div>';return;}
   var colors={positive:"#4ade80",negative:"#f87171",anxious:"#fbbf24",curious:"#60a5fa",focused:"#9ca3af",playful:"#c084fc",confused:"#fb923c",neutral:"#6b7280"};
   var maxVal=Math.max.apply(null,moods.map(function(m){return dist[m]||0;}))||1;
   var html='';
@@ -2202,11 +2244,14 @@ function _renderBBMood(moodData){
   moods.slice(0,5).forEach(function(m){
     var pct=((dist[m]||0)/maxVal*100).toFixed(0);
     var c=colors[m]||"#888";
-    html+='<div style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:.78em">';
-    html+='<span style="width:55px;color:'+c+'">'+m+'</span>';
-    html+='<div style="flex:1;height:6px;background:rgba(255,255,255,0.04);border-radius:3px;overflow:hidden">';
-    html+='<div style="width:'+pct+'%;height:100%;background:'+c+';border-radius:3px;opacity:.7"></div>';
-    html+='</div></div>';
+    var label=m.charAt(0).toUpperCase()+m.slice(1);
+    html+='<div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:.85em">';
+    html+='<span style="width:65px;color:'+c+';font-weight:500">'+label+'</span>';
+    html+='<div style="flex:1;height:8px;background:rgba(255,255,255,0.04);border-radius:4px;overflow:hidden">';
+    html+='<div style="width:'+pct+'%;height:100%;background:'+c+';border-radius:4px;opacity:.75"></div>';
+    html+='</div>';
+    html+='<span style="width:28px;text-align:right;color:var(--text4);font-size:.85em">'+pct+'%</span>';
+    html+='</div>';
   });
   el.innerHTML=html;
 }
@@ -2795,19 +2840,18 @@ function _checkSleep(){
   fetch("/api/sleep").then(function(r){return r.json();}).then(function(d){
     var prev=_sleepState;
     _sleepState=d.state||"awake";
+    window._sleepState=_sleepState;
     var overlay=document.getElementById("sleep-overlay");
     var dreamEl=document.getElementById("sleep-dream-text");
     var hintEl=overlay?overlay.querySelector(".sleep-wake-hint"):null;
     if(!overlay)return;
 
     if(_sleepState==="drowsy"){
-      // Pulsing screen overlay — any activity dismisses it
+      // Pulsing screen overlay — rotate through drowsy lines each poll
       overlay.classList.remove("active");
-      if(!overlay.classList.contains("drowsy")){
-        overlay.classList.add("drowsy");
-        var msg=_drowsyLines[Math.floor(Math.random()*_drowsyLines.length)];
-        dreamEl.textContent=msg;dreamEl.style.display="";
-      }
+      overlay.classList.add("drowsy");
+      var msg=_drowsyLines[Math.floor(Math.random()*_drowsyLines.length)];
+      dreamEl.textContent=msg;dreamEl.style.display="";
       if(hintEl)hintEl.style.display="none";
       _statusStrip.clear("sleep");
 
@@ -2999,15 +3043,8 @@ document.addEventListener("DOMContentLoaded",function(){
       _sleepState="awake";
       _waking=false;
       _statusStrip.clear("sleep");
-      // Inject as unprompted assistant message — no user prompt visible
-      var dreamMsg="";
-      if(!_isJostled&&_wakeDigest){
-        dreamMsg="*"+wakeLine+"*\n\n"+_wakeDigest;
-      } else if(!_isJostled&&_wakeDream){
-        dreamMsg="*"+wakeLine+"*\n\n*"+_wakeDream+"*";
-      } else {
-        dreamMsg="*"+wakeLine+"*";
-      }
+      // Inject as unprompted assistant message — just the wake line, no old content
+      var dreamMsg="*"+wakeLine+"*";
       history.push({role:"assistant",content:dreamMsg});
       var w=getMW();
       if(w){w.appendChild(buildRow("assistant",dreamMsg,history.length-1));scrollBot(true);}
@@ -3127,8 +3164,12 @@ document.addEventListener("DOMContentLoaded",function(){
   document.getElementById("behavior-btn").onclick=function(){
     var bb=document.getElementById("behavior-bar");
     bb.classList.toggle("on");
-    if(bb.classList.contains("on"))_refreshBehaviorBar();
+    var isOn=bb.classList.contains("on");
+    try{localStorage.setItem("manifold_bb_open",isOn?"1":"0");}catch(e){}
+    if(isOn)_refreshBehaviorBar();
   };
+  // Restore behavior bar state on load
+  try{if(localStorage.getItem("manifold_bb_open")==="1"){var bb=document.getElementById("behavior-bar");bb.classList.add("on");_refreshBehaviorBar();}}catch(e){}
   (function(){var lb=document.getElementById("learn-toggle-btn");if(lb)lb.onclick=async function(){var on=lb.textContent==="Off";lb.textContent=on?"On":"Off";lb.style.background=on?"rgba(74,222,128,.12)":"rgba(255,255,255,.04)";lb.style.borderColor=on?"rgba(74,222,128,.3)":"var(--border2)";lb.style.color=on?"#4ade80":"var(--text3)";await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({online_learning:on})});};})();
   (function(){var pb=document.getElementById("proactive-toggle-btn");if(pb){pb.onclick=async function(){var on=pb.textContent==="Off";pb.textContent=on?"On":"Off";pb.style.background=on?"rgba(124,58,237,.12)":"rgba(255,255,255,.04)";pb.style.borderColor=on?"rgba(124,58,237,.3)":"var(--border2)";pb.style.color=on?"#a78bfa":"var(--text3)";await fetch("/api/proactive/enable",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});};};})();
   document.querySelectorAll(".sug").forEach(function(s){s.onclick=function(){sendMessage(s.dataset.text);};});
@@ -3272,7 +3313,7 @@ document.addEventListener("DOMContentLoaded",function(){
     var el=document.getElementById(targetId);if(!el)return;
     var dims=["Openness","Conscientiousness","Extraversion","Agreeableness","Neuroticism"];
     var labels=["O","C","E","A","N"];
-    var w=el.offsetWidth||140,h=130,cx=w/2,cy=68,r=50;
+    var w=el.offsetWidth||160,h=el.offsetHeight||180,cx=w/2,cy=h*0.42,r=Math.min(w,h)*0.32;
     var svg='<svg width="'+w+'" height="'+h+'" style="display:block">';
     // Pentagon grid
     var angles=dims.map(function(_,i){return -Math.PI/2+i*2*Math.PI/5;});
@@ -4896,11 +4937,7 @@ document.addEventListener("DOMContentLoaded",function(){
   // Extracted from the response itself — no extra model call needed.
   // ════════════════════════════════════════════════════════════════
   function _showFollowupChips(row,bub){
-    var old=row.querySelector(".followup-chips");if(old)old.remove();
-    // Only trigger on high drift (orange = #fb923c or red = #f43f5e)
-    var tc=window._lastTempColor||"";
-    var highDrift=(tc==="#fb923c"||tc==="#f43f5e");
-    if(!highDrift)return;
+    return; // disabled — redundant with user's own follow-up flow
     // Extract question sentences from the response text
     var txt=(bub.innerText||"").replace(/[⚡⚠↗]/g,"").replace(/\s+/g," ").trim();
     if(txt.length<60)return;
@@ -5589,6 +5626,239 @@ document.addEventListener("DOMContentLoaded",function(){
   };
 
 });
+})();
+</script>
+<script>
+/* ═══ Bunny Manager ═══ */
+(function(){
+var TYPES=["BlackWhite","Brown2Color","BrownWhite","BunnyBlack","BunnyBrown","DemonicBunny","FantasyBunny","GreyBunny","LightBrown","WhiteBunny"];
+var ANIMS={Running:{frames:8,w:32},Idle:{frames:12,w:32},Jumping:{frames:11,w:32},LieDown:{frames:6,w:32},Sleep:{frames:6,w:32},Liking:{frames:5,w:32}};
+var strip=document.getElementById("bunny-strip");
+var active={};// type→{el,state,frame,timer,dir,x,stateTimer,sleeping}
+var enabled=localStorage.getItem("bunnies_enabled")==="true";
+var _tick=null;
+var SCALE=2;// 32→64px display
+
+function spriteUrl(type,anim){return "/static/bunnies/"+type+"/"+anim+".png";}
+
+function setFrame(b,anim,frame){
+  var a=ANIMS[anim];if(!a)return;
+  b.el.style.backgroundImage="url('"+spriteUrl(b.type,anim)+"')";
+  b.el.style.backgroundPosition="-"+(frame*a.w*SCALE)+"px 0";
+  b.el.style.width=(a.w*SCALE)+"px";
+  b.el.style.height=(a.w*SCALE)+"px";
+  b.el.style.backgroundSize="auto "+(a.w*SCALE)+"px";
+}
+
+function setState(b,state){
+  b.state=state;b.frame=0;b.stateTimer=0;
+  if(state==="running"){
+    b.dir=Math.random()>0.5?1:-1;
+    b.speed=1.8+Math.random()*2.5;
+    b.stateDur=180+Math.floor(Math.random()*300);// 3-8s at 120ms tick
+  }else if(state==="idle"){
+    b.stateDur=40+Math.floor(Math.random()*60);// 2-5s
+  }else if(state==="lieDown"){
+    b.stateDur=80+Math.floor(Math.random()*80);// 5-10s
+  }else if(state==="sleep"){
+    b.sleeping=true;
+    b.stateDur=160+Math.floor(Math.random()*160);// 10-20s
+  }else if(state==="jumping"){
+    b.stateDur=ANIMS.Jumping.frames*3;// play once
+  }
+}
+
+function tickBunny(b){
+  b.stateTimer++;b.frame++;
+  var anim,a;
+  if(b.state==="liking"){
+    var lf=Math.floor(b.frame/4);
+    if(lf>=ANIMS.Liking.frames){setState(b,"idle");return;}
+    setFrame(b,"Liking",lf);return;
+  }
+  if(b.state==="pet"){
+    setFrame(b,"LieDown",Math.min(b.frame,ANIMS.LieDown.frames-1));
+    if(b.stateTimer>=b.stateDur){setState(b,"idle");}
+    return;
+  }
+  if(b.state==="running"){
+    anim="Running";a=ANIMS[anim];
+    setFrame(b,anim,b.frame%a.frames);
+    b.x+=b.dir*b.speed;
+    b.el.style.left=b.x+"px";
+    b.el.style.transform=b.dir<0?"scaleX(-1)":"scaleX(1)";
+    if(b.stateTimer>=b.stateDur){
+      // Check if off-screen → despawn
+      var sw=strip.offsetWidth||window.innerWidth;
+      if(b.x<-80||b.x>sw+80){despawn(b.type);return;}
+      setState(b,"idle");
+    }
+  }else if(b.state==="idle"){
+    anim="Idle";a=ANIMS[anim];
+    setFrame(b,anim,b.frame%a.frames);
+    if(b.stateTimer>=b.stateDur){
+      var r=Math.random();
+      if(r<0.25)setState(b,"lieDown");
+      else if(r<0.4)setState(b,"jumping");
+      else{setState(b,"running");}
+    }
+  }else if(b.state==="lieDown"){
+    anim="LieDown";a=ANIMS[anim];
+    setFrame(b,anim,Math.min(b.frame,a.frames-1));
+    if(b.stateTimer>=b.stateDur){
+      var r2=Math.random();
+      if(r2<0.4){setState(b,"sleep");}
+      else{setState(b,"idle");}
+    }
+  }else if(b.state==="sleep"){
+    anim="Sleep";a=ANIMS[anim];
+    setFrame(b,anim,b.frame%a.frames);
+    if(b.stateTimer>=b.stateDur){
+      b.sleeping=false;
+      setState(b,"idle");
+    }
+  }else if(b.state==="jumping"){
+    anim="Jumping";a=ANIMS[anim];
+    var jf=Math.floor(b.frame/3);// slower playback
+    if(jf>=a.frames){setState(b,"running");}
+    else{setFrame(b,anim,jf);}
+  }
+}
+
+function spawn(type){
+  if(active[type])return;
+  var el=document.createElement("div");
+  el.className="bunny-sprite";
+  el.style.pointerEvents="auto";el.style.cursor="pointer";
+  el.addEventListener("click",function(){
+    var b=active[type];if(!b||b.state==="pet")return;
+    b.state="pet";b.frame=0;b.stateTimer=0;b.stateDur=25;// ~3s at 120ms
+  });
+  var sw=strip.offsetWidth||window.innerWidth;
+  var startLeft=Math.random()>0.5?-64:sw+10;
+  el.style.left=startLeft+"px";
+  strip.appendChild(el);
+  var b={el:el,type:type,x:startLeft,frame:0,state:"",stateTimer:0,stateDur:0,dir:1,speed:1,sleeping:false};
+  active[type]=b;
+  setState(b,"running");
+  // Point toward center
+  b.dir=startLeft<0?1:-1;
+}
+
+function despawn(type){
+  var b=active[type];if(!b)return;
+  if(b.el.parentNode)b.el.parentNode.removeChild(b.el);
+  delete active[type];
+}
+
+function tick(){
+  for(var t in active)tickBunny(active[t]);
+}
+
+function maybeSpawn(){
+  if(!enabled)return;
+  var count=Object.keys(active).length;
+  if(count>=4)return;
+  // Pick a random type not already active and not sleeping
+  var avail=TYPES.filter(function(t){return !active[t];});
+  if(!avail.length)return;
+  var pick=avail[Math.floor(Math.random()*avail.length)];
+  spawn(pick);
+}
+
+var _spawnInt=null;
+function scheduleSpawn(){
+  if(_spawnInt)clearTimeout(_spawnInt);
+  _spawnInt=setTimeout(function(){maybeSpawn();scheduleSpawn();},5000+Math.floor(Math.random()*10000));
+}
+function start(){
+  if(_tick)return;
+  _tick=setInterval(tick,120);
+  scheduleSpawn();
+  maybeSpawn();
+}
+
+function stop(){
+  if(_tick){clearInterval(_tick);_tick=null;}
+  if(_spawnInt){clearTimeout(_spawnInt);_spawnInt=null;}
+  for(var t in active)despawn(t);
+}
+
+// Settings toggle
+var bb=document.getElementById("bunny-toggle-btn");
+if(bb){
+  if(enabled){bb.textContent="On";bb.style.background="rgba(251,191,36,.12)";bb.style.borderColor="rgba(251,191,36,.3)";bb.style.color="#fbbf24";}
+  bb.onclick=function(){
+    enabled=!enabled;
+    localStorage.setItem("bunnies_enabled",enabled?"true":"false");
+    bb.textContent=enabled?"On":"Off";
+    bb.style.background=enabled?"rgba(251,191,36,.12)":"rgba(255,255,255,.04)";
+    bb.style.borderColor=enabled?"rgba(251,191,36,.3)":"var(--border2)";
+    bb.style.color=enabled?"#fbbf24":"var(--text3)";
+    if(enabled)start();else stop();
+  };
+}
+
+if(enabled)setTimeout(start,1000);
+
+// ── Sleep overlay bunny sprite ──
+var _sleepBunnyEl=document.getElementById("sleep-bunny-icon");
+var _sleepBunnyFrame=0;
+var _sleepBunnyAnim=null;
+var _sleepBunnyInt=null;
+function _updateSleepBunny(state){
+  if(!_sleepBunnyEl)return;
+  var anim=null,sz=96;
+  if(state==="entering"||state==="drowsy"){anim="LieDown";}
+  else if(state==="sleeping"){anim="Sleep";}
+  else{
+    // Waking — play jump then clear
+    if(_sleepBunnyAnim!=="Jumping"&&_sleepBunnyAnim!==null){
+      anim="Jumping";
+    }else{
+      _sleepBunnyEl.style.backgroundImage="";
+      _sleepBunnyAnim=null;
+      if(_sleepBunnyInt){clearInterval(_sleepBunnyInt);_sleepBunnyInt=null;}
+      return;
+    }
+  }
+  if(anim===_sleepBunnyAnim)return;
+  _sleepBunnyAnim=anim;_sleepBunnyFrame=0;
+  if(_sleepBunnyInt)clearInterval(_sleepBunnyInt);
+  var a=ANIMS[anim];if(!a)return;
+  var _sleepType=TYPES[Math.floor(Math.random()*TYPES.length)];
+  _sleepBunnyEl.style.backgroundImage="url('/static/bunnies/"+_sleepType+"/"+anim+".png')";
+  _sleepBunnyEl.style.backgroundSize="auto "+sz+"px";
+  _sleepBunnyEl.style.width=sz+"px";_sleepBunnyEl.style.height=sz+"px";
+  _sleepBunnyEl.style.backgroundPosition="0 0";
+  _sleepBunnyInt=setInterval(function(){
+    _sleepBunnyFrame=(_sleepBunnyFrame+1)%a.frames;
+    _sleepBunnyEl.style.backgroundPosition="-"+(_sleepBunnyFrame*32*(sz/32))+"px 0";
+  },150);
+}
+// Hook into existing _checkSleep via mutation
+var _origCheckSleep=window._checkSleep;
+var _prevSleepForBunny="awake";
+var _sleepObsInt=setInterval(function(){
+  var s=window._sleepState||"awake";
+  if(s!==_prevSleepForBunny){_prevSleepForBunny=s;_updateSleepBunny(s);}
+},500);
+
+// Expose liking trigger for reinforce button
+window._bunnyLiking=function(){
+  if(!enabled)return;
+  // Make a random active bunny do the liking animation, or spawn one
+  var keys=Object.keys(active);
+  var b=null;
+  if(keys.length){b=active[keys[Math.floor(Math.random()*keys.length)]];}
+  if(!b){
+    var avail=TYPES.filter(function(t){return !active[t];});
+    if(avail.length){spawn(avail[0]);b=active[avail[0]];}
+  }
+  if(!b)return;
+  b.state="liking";b.frame=0;b.stateTimer=0;b.stateDur=ANIMS.Liking.frames*4;
+};
+
 })();
 </script>
 <script>

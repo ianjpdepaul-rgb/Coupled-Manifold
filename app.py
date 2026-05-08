@@ -5480,7 +5480,7 @@ plt.tight_layout()
     if _sys_prompt_additions:
         _full_sys += "\n\n" + "\n".join(_sys_prompt_additions)
     # Stamp current date/time so the model can answer temporal questions accurately
-    _now_str  = datetime.datetime.now().strftime("%A, %B %d, %Y at %H:%M")
+    _now_str  = datetime.datetime.now().strftime("%A, %B %d, %Y at %-I:%M %p")
     _full_sys = f"[Current date and time: {_now_str}]\n\n" + _full_sys
 
     # ── System prompt cap — paragraph-boundary truncation ────────────
@@ -5744,11 +5744,12 @@ plt.tight_layout()
             _dynamic_prompt_cap = max(800, min(_dynamic_prompt_cap, 3000))  # clamp [800, 3000]
 
             # Hard memory gates — override formula at dangerous thresholds
-            if _mem_gb > 10.5:
+            # Note: 12B model baseline is ~7.5GB, so only trigger near actual OOM.
+            if _mem_gb > 12.5:
                 _dynamic_prompt_cap = min(_dynamic_prompt_cap, 600)
-            elif _mem_gb > 9.5:
+            elif _mem_gb > 11.5:
                 _dynamic_prompt_cap = min(_dynamic_prompt_cap, 1200)
-            elif _mem_gb > 8.5:
+            elif _mem_gb > 10.5:
                 _dynamic_prompt_cap = min(_dynamic_prompt_cap, 2000)
 
             if len(prompt) > _dynamic_prompt_cap:
@@ -5763,15 +5764,14 @@ plt.tight_layout()
                     prompt = prompt[:_dynamic_prompt_cap]
 
             # Cap max_new based on memory pressure — fewer output tokens = less KV growth
-            if _mem_gb > 10:
+            # Note: 12B model alone is ~7.5GB, so gates must account for baseline weight footprint.
+            # Only trigger hard caps when genuinely close to OOM (16GB total).
+            if _mem_gb > 12:
                 _max_new = min(_max_new, 100)
-                print(f"[GEN] ⚠ memory {_mem_gb:.1f}GB > 10GB — capping max_new to {_max_new}", flush=True)
-            elif _mem_gb > 9:
-                _max_new = min(_max_new, 256)
-                print(f"[GEN] ⚠ memory {_mem_gb:.1f}GB > 9GB — capping max_new to {_max_new}", flush=True)
-            elif _mem_gb > 8:
+                print(f"[GEN] ⚠ memory {_mem_gb:.1f}GB > 12GB — capping max_new to {_max_new}", flush=True)
+            elif _mem_gb > 11:
                 _max_new = min(_max_new, 512)
-                print(f"[GEN] ⚠ memory {_mem_gb:.1f}GB > 8GB — capping max_new to {_max_new}", flush=True)
+                print(f"[GEN] ⚠ memory {_mem_gb:.1f}GB > 11GB — capping max_new to {_max_new}", flush=True)
 
             # Shrink prefill chunk size under memory pressure — reduces peak attention
             # buffer allocation during prefill (where OOM actually crashes).
@@ -6100,17 +6100,10 @@ plt.tight_layout()
                 pass
         threading.Thread(target=_log_failure, daemon=True).start()
 
-    # Termination
+    # Termination — check still runs (gates learning etc.) but warnings
+    # no longer injected into chat; status bar already shows this info.
     should_term, term_reason = ctrl_active.should_terminate()
     term_warning = ""
-    if should_term:
-        term_warning = (
-            "\n\n⚠️ **SUSTAINED PATHOLOGICAL CONVERGENCE** — geometry locked."
-            if term_reason == "sustained_pathological" else
-            "\n\n⚠️ **SESSION ANCHOR DRIFT** — cumulative trace far below session baseline."
-            if term_reason == "anchor_drift" else
-            "\n\n⚠️ **CURVATURE DRIFT** — trace progressively declining."
-        )
 
     # Quality check — shared by learning gate and archive gate below
     _resp_words  = response.split()
@@ -7123,18 +7116,31 @@ def _generate_greeting() -> str:
             if _c and not _c.startswith("/"):
                 _topic_parts.append(_c[:120])
     _topic = _topic_parts[-1] if _topic_parts else ""
-    # Build elapsed context
+    # Build elapsed context + dream topics
     _elapsed, _ = get_boot_context()
     _an = _assistant_name[0] or "Graceful"
     _un = _user_name[0] or "them"
+    _dream = _sleep.dream or ""
+    # Extract just the topic words from "dreaming about: x, y, z"
+    _dream_topics = _dream.replace("dreaming about:", "").strip() if _dream else ""
     # Hidden prompt — exists only in local variables, never persisted
+    import random as _greet_rng
+    _greet_starters = [
+        "yo", "hey", "mm", "ah", "aight", "sup", "back",
+        "ok ok", "right", "hm", "alright", "ayo",
+    ]
+    _starter = _greet_rng.choice(_greet_starters)
+    _dream_hint = ""
+    if _dream_topics:
+        _dream_hint = f" You were just dreaming about {_dream_topics} — you can reference that naturally but keep it chill, one passing mention max."
     _greet_msgs = [
         {"role": "system", "content": (
-            f"You are {_an}. You just woke up after being asleep"
+            f"You are {_an}. You just woke up after napping"
             + (f" for {_elapsed}" if _elapsed and _elapsed != "just now" else "")
-            + ". Greet the user naturally in 1-2 short sentences, like you're still coming to. "
-            + "Be warm but brief — no questions, no lists. "
-            + ("Reference what you were last discussing: " + _topic if _topic else "")
+            + f". Say ONE short casual sentence to {_un}. Start with \"{_starter}\"."
+            + _dream_hint
+            + " Do NOT be corny or dramatic about dreams. Do NOT say 'hello there'. "
+            + "Do NOT ask questions. Keep it under 10 words."
         )},
         {"role": "user", "content": "(waking up)"},
     ]

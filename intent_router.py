@@ -106,13 +106,16 @@ def _classify_fast(msg: str) -> IntentDecision | None:
 
     # Social media / video → factual (web search)  — before greetings so
     # "instagram @grace" doesn't get caught by the short-message gate
+    # But only if the user is ASKING about something, not just narrating what they're doing
     if re.search(r'\b(instagram|tiktok|twitter|linkedin|youtube|reddit)\b', ml):
-        return IntentDecision(
-            intent="factual", confidence="high",
-            reason="social/video platform query",
-            should_search=True,
-            search_sources=INTENT_SEARCH_STRATEGY["factual"],
-        )
+        _is_narrating = re.search(r'\b(watching|scrolling|saw|seen|looking at|browsing|been on)\b', ml)
+        if not _is_narrating:
+            return IntentDecision(
+                intent="factual", confidence="high",
+                reason="social/video platform query",
+                should_search=True,
+                search_sources=INTENT_SEARCH_STRATEGY["factual"],
+            )
 
     # Greetings / social → meta
     _greetings = {"hi", "hello", "hey", "sup", "thanks", "thank you",
@@ -205,11 +208,14 @@ def _classify_fast(msg: str) -> IntentDecision | None:
 
     # Fact-check / academic → fact_check
     _academic = [
-        r'\b(paper|study|research|journal|doi|arxiv|published)\b',
+        r'\b(paper|stud(y|ies)|research|journal|doi|arxiv|published)\b',
         r'\b(citation|peer.?review|methodology|findings|results)\b',
         r'\b(is it true|fact.?check|verify|accurate|according to)\b',
     ]
-    if sum(1 for p in _academic if re.search(p, ml)) >= 2:
+    _academic_hits = sum(1 for p in _academic if re.search(p, ml))
+    # Single academic keyword is enough when paired with explicit search intent
+    _has_explicit_search = bool(re.search(r'\b(search|look up|find)\b', ml))
+    if _academic_hits >= 2 or (_academic_hits >= 1 and _has_explicit_search):
         return IntentDecision(
             intent="fact_check", confidence="high",
             reason="academic/fact-check signals",

@@ -195,7 +195,19 @@ def _make_dream(digest: str, topic_words: list[str]) -> str:
              "hidden", "visible", "relative", "absolute", "position",
              "transition", "opacity", "transform", "scale", "ease",
              "monospace", "serif", "sans", "code", "pre", "html", "css",
-             "data", "class", "title", "href", "target", "rel"}
+             "data", "class", "title", "href", "target", "rel",
+             # Common stopwords that aren't real topics
+             "the", "and", "that", "this", "with", "from", "have", "has",
+             "been", "were", "was", "are", "for", "not", "but", "what",
+             "all", "can", "had", "her", "his", "him", "how", "its",
+             "may", "new", "now", "old", "see", "way", "who", "did",
+             "get", "got", "let", "say", "she", "too", "use", "yes",
+             "here", "there", "just", "like", "also", "than", "then",
+             "them", "they", "into", "some", "could", "other", "about",
+             "which", "their", "will", "each", "make", "more", "very",
+             "when", "come", "know", "take", "want", "does", "thing",
+             "much", "because", "good", "give", "most", "only", "tell",
+             "one", "two", "you", "your", "yeah", "okay", "sure", "well"}
     clean = [w for w in topic_words if w not in _junk and len(w) > 2]
     themes = clean[:4] if clean else ["the conversation"]
     return "dreaming about: " + ", ".join(themes)
