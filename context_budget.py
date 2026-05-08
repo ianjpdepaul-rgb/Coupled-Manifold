@@ -40,14 +40,29 @@ class ContextBudget:
         self.max_chars = max_chars
 
     def allocate(self, query: str, has_search: bool, has_corpus: bool,
-                 turn_count: int) -> dict:
+                 turn_count: int, continuation: bool = False) -> dict:
         """
         Return a dict of {component: char_budget}.
         Budgets are scaled down proportionally if the total exceeds max_chars.
+
+        continuation=True shifts budget from background knowledge to history —
+        during flow, the model's prior output IS the context. It already
+        synthesized the corpus/identity last turn. Re-injecting them just
+        starves working memory.
         """
         q = query.lower()
 
-        if _is_academic(q):
+        if continuation:
+            # Mid-flow: maximize history, light grounding only.
+            # Interoception stays — trace/snobline must steer every turn.
+            budget = {
+                "history":       4500,
+                "corpus":        600 if has_corpus else 0,
+                "identity":      100,
+                "interoception": 200,
+                "search":        0,
+            }
+        elif _is_academic(q):
             budget = {
                 "corpus":        3000,
                 "search":        1800 if has_search else 0,

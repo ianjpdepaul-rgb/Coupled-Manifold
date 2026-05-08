@@ -5119,13 +5119,27 @@ plt.tight_layout()
         _ctx_corpus  = 2       # two corpus chunks
         _ctx_compact = False   # full identity block
 
-    # Identity-relevant queries need the full block (raw_notes, not compact)
+    # Continuation detection — user is mid-flow, wants the model to keep going.
+    # Shifts budget from background knowledge to history (the model's own prior output).
     _q_low = user_msg.lower()
+    _is_continuation = any(x in _q_low for x in [
+        "go on", "continue", "keep going", "more", "keep writing",
+        "finish", "next", "and then", "what else", "carry on",
+        "don't stop", "dont stop", "elaborate", "expand",
+    ])
+
+    # Identity-relevant queries need the full block (raw_notes, not compact)
     if any(w in _q_low for w in ["about me", "you know", "remember", "told you", "my ", "i am", "who am i"]):
         _ctx_compact = False
 
+    # Continuation: trust prior output, minimize re-injection
+    if _is_continuation:
+        _ctx_corpus  = 1       # light grounding only — model already synthesized the content
+        _ctx_compact = True    # one-line identity — you know who they are
+        _ctx_turns   = 10      # maximize visible history — the work IS the context
+
     _drift_pre   = compute_drift(user_msg)  # pre-gen drift on user message
-    if _drift_pre > 0.55:                   # user drifting from corpus — boost injection
+    if _drift_pre > 0.55 and not _is_continuation:   # don't boost corpus during flow
         _ctx_corpus = min(_ctx_corpus + 2, 4)
     # Recently uploaded file — boost corpus injection so the model actually sees the content
     _recent_upload = (_last_indexed_file[0] and turn_count[0] - _last_indexed_file[1] <= 6)
@@ -5156,7 +5170,7 @@ plt.tight_layout()
 
     # ── Context budget allocation ────────────────────────────────
     if _CONTEXT_BUDGET_AVAILABLE:
-        _budgets     = _context_budget.allocate(user_msg, searched, bool(mem_context), turn_count[0])
+        _budgets     = _context_budget.allocate(user_msg, searched, bool(mem_context), turn_count[0], continuation=_is_continuation)
         mem_context  = _context_budget.truncate_to_budget(mem_context,  _budgets.get("corpus", 800) + _budgets.get("identity", 300))
         intero_block = _context_budget.truncate_to_budget(intero_block, _budgets.get("interoception", 300))
         web_context  = _context_budget.truncate_to_budget(web_context,  _budgets.get("search", 1800))

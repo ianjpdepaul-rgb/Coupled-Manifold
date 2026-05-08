@@ -915,17 +915,24 @@ class LayeredHistory:
 
         msgs.append({"role": "system", "content": "\n".join(system_parts)})
 
-        # Recent turns — always included for immediate coherence
-        # Cap assistant messages to prevent model's own verbose responses
-        # from re-poisoning subsequent context with invented concepts.
-        # Most recent 2 turns get full content (active work), older turns truncated.
+        # Recent turns — progressive memory decay (like real conversation).
+        # Most recent: verbatim. Older: substance. Oldest: gist.
+        # Prevents the model's own verbose output from crowding the window
+        # while still giving consecutive work enough continuity.
         _recent_slice = self.recent[-cap:]
         _n = len(_recent_slice)
         for _idx, m in enumerate(_recent_slice):
             if m.get("role") == "assistant":
                 c = m.get("content", "")
-                # Last 2 assistant messages get more room (consecutive work needs continuity)
-                _cap = 2500 if _idx >= _n - 4 else 1200
+                _age = _n - 1 - _idx   # 0 = most recent, higher = older
+                if _age <= 1:
+                    _cap = 2500   # just said — full working memory
+                elif _age <= 3:
+                    _cap = 1500   # a moment ago — substance
+                elif _age <= 5:
+                    _cap = 600    # a few turns ago — gist
+                else:
+                    _cap = 250    # earlier — headline only
                 msgs.append({"role": "assistant", "content": c[:_cap] + ("…" if len(c) > _cap else "")})
             else:
                 msgs.append(m)
