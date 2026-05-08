@@ -917,11 +917,16 @@ class LayeredHistory:
 
         # Recent turns — always included for immediate coherence
         # Cap assistant messages to prevent model's own verbose responses
-        # from re-poisoning subsequent context with invented concepts
-        for m in self.recent[-cap:]:
+        # from re-poisoning subsequent context with invented concepts.
+        # Most recent 2 turns get full content (active work), older turns truncated.
+        _recent_slice = self.recent[-cap:]
+        _n = len(_recent_slice)
+        for _idx, m in enumerate(_recent_slice):
             if m.get("role") == "assistant":
                 c = m.get("content", "")
-                msgs.append({"role": "assistant", "content": c[:1500] + ("…" if len(c) > 1500 else "")})
+                # Last 2 assistant messages get more room (consecutive work needs continuity)
+                _cap = 2500 if _idx >= _n - 4 else 1200
+                msgs.append({"role": "assistant", "content": c[:_cap] + ("…" if len(c) > _cap else "")})
             else:
                 msgs.append(m)
         return msgs

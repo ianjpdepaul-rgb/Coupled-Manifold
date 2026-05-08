@@ -5107,15 +5107,15 @@ plt.tight_layout()
         _ctx_route = "large"
     _wc2 = len(user_msg.split())
     if _ctx_route == "small" and _wc2 <= 5:
-        _ctx_turns   = 3       # bare conversational — just recent few turns
+        _ctx_turns   = 4       # bare conversational — recent turns for coherence
         _ctx_corpus  = 0       # no corpus injection
         _ctx_compact = True    # compact identity (one line)
     elif _ctx_route == "small":
-        _ctx_turns   = 5
+        _ctx_turns   = 6
         _ctx_corpus  = 1       # single best chunk only
         _ctx_compact = True
     else:
-        _ctx_turns   = 5       # complex — 12B model needs tight KV cache budget on 16GB
+        _ctx_turns   = 8       # complex — raised from 5, dynamic cap handles memory
         _ctx_corpus  = 2       # two corpus chunks
         _ctx_compact = False   # full identity block
 
@@ -5645,15 +5645,23 @@ plt.tight_layout()
         except Exception:
             _route = "large" if _wc > 20 else "small"
 
+        # Detect continuation signals — user wants the model to keep going
+        _continuation = any(x in user_msg.lower() for x in [
+            "go on", "continue", "keep going", "more", "keep writing",
+            "finish", "next", "and then", "what else", "carry on",
+            "don't stop", "dont stop", "elaborate", "expand",
+        ])
         if _is_code_request:
             _max_new = MAX_NEW  # code always gets full budget — never truncate mid-block
+        elif _continuation:
+            _max_new = MAX_NEW  # continuation gets full budget — don't choke mid-paper
         elif _has_q or _uncertain:
             # User is asking or uncertain — give a full medium budget
             _max_new = MAX_NEW if _route == "large" else 512
         elif _route == "small" and _wc <= 3:
-            _max_new = 120    # greeting or one-liner
+            _max_new = 200    # greeting or one-liner (was 120 — too tight)
         elif _route == "small":
-            _max_new = 350   # simple factual / short follow-up
+            _max_new = 512   # simple factual / short follow-up (was 350)
         else:
             _max_new = MAX_NEW  # complex — full budget
 
