@@ -2000,11 +2000,48 @@ def _tool_search(arg: str) -> tuple[str, str]:
     return (format_results(_res) if _res else "No results found.", "")
 
 def _tool_find(arg: str) -> tuple[str, str]:
-    _chunks = mem.corpus.search(arg.strip(), k=3)
+    """Search indexed documents. Returns up to ~3000 chars of matching content."""
+    _q = arg.strip()
+    # If query looks like a filename or "all of <file>", dump all chunks from that source
+    _sources = {c.get("source", "") for c in mem.corpus.chunks}
+    _target_src = None
+    for src in _sources:
+        if src.lower() in _q.lower() or _q.lower() in src.lower():
+            _target_src = src
+            break
+    if any(w in _q.lower() for w in ["whole file", "full file", "entire file", "all of", "everything from"]):
+        # Try to find which source they mean
+        if not _target_src and _sources:
+            # Fall back to semantic search to identify the source
+            _hit = mem.corpus.search(_q, k=1)
+            if _hit:
+                _target_src = _hit[0].get("source") if isinstance(_hit[0], dict) else None
+
+    if _target_src:
+        # Dump all chunks from this source, up to context budget
+        _file_chunks = [c for c in mem.corpus.chunks if c.get("source") == _target_src]
+        _file_chunks.sort(key=lambda c: c.get("chunk_id", 0))
+        _parts = []
+        _char_count = 0
+        _MAX_FIND = 4000  # generous but won't blow up context
+        for c in _file_chunks:
+            txt = c.get("text", "")
+            if _char_count + len(txt) > _MAX_FIND:
+                txt = txt[:_MAX_FIND - _char_count]
+                _parts.append(txt)
+                _char_count += len(txt)
+                break
+            _parts.append(txt)
+            _char_count += len(txt)
+        return (f"[Full content from {_target_src} — {len(_file_chunks)} chunks, {_char_count} chars]\n\n"
+                + "\n\n".join(_parts), "")
+
+    # Standard semantic search — more chunks, more text
+    _chunks = mem.corpus.search(_q, k=6)
     if not _chunks:
         return ("No relevant documents in corpus.", "")
     return ("\n\n".join(
-        f"[{c.get('source','?')}]: {c.get('text','')[:300]}"
+        f"[{c.get('source','?')}]: {c.get('text','')[:500]}"
         for c in _chunks
     ), "")
 
@@ -5092,16 +5129,26 @@ plt.tight_layout()
         _ctx_corpus = min(_ctx_corpus + 2, 4)
     # Recently uploaded file — boost corpus injection so the model actually sees the content
     _recent_upload = (_last_indexed_file[0] and turn_count[0] - _last_indexed_file[1] <= 6)
+    # Corpus has indexed content (survives restart — checks disk-persisted chunks)
+    _has_corpus = bool(mem.corpus.chunks)
+    _corpus_sources = list({c.get("source", "") for c in mem.corpus.chunks}) if _has_corpus else []
     if _recent_upload:
         _ctx_corpus = max(_ctx_corpus, 4)
+    elif _has_corpus:
+        _ctx_corpus = max(_ctx_corpus, 3)  # always pull at least 3 chunks when corpus exists
     _min_score = 0.16 if _drift_pre > 0.55 else 0.20
     if _recent_upload:
         _min_score = 0.08  # very low threshold — uploaded files should always surface
+    elif _has_corpus:
+        _min_score = 0.12  # lower threshold for persisted corpus — don't lose content on restart
     # When a file was recently uploaded, augment search query with filename so
     # vague references ("check it out", "the paper") still retrieve chunks
     _corpus_query = user_msg
     if _recent_upload and _last_indexed_file[0]:
         _corpus_query = f"{user_msg} {_last_indexed_file[0]}"
+    elif _has_corpus and len(_corpus_sources) <= 3:
+        # Few sources indexed — augment query with source names for better recall
+        _corpus_query = f"{user_msg} {' '.join(_corpus_sources)}"
     mem_context  = "" if _is_greeting else mem.build_context(
         _corpus_query, n_corpus=_ctx_corpus, compact_identity=_ctx_compact,
         min_score=_min_score)
@@ -5130,14 +5177,21 @@ plt.tight_layout()
     if intero_block:   context_parts.append(intero_block)
     if web_context:    context_parts.append(web_context)
 
-    # Recently uploaded file — remind the model it has access to the document
-    if _recent_upload and _last_indexed_file[0]:
+    # Corpus grounding NOTE — injected whenever corpus excerpts actually made it into context.
+    # Survives restart: checks mem_context for excerpt markers, not just _recent_upload.
+    _corpus_injected = "[user writing" in mem_context
+    if _corpus_injected:
+        _src_list = ", ".join(f'"{s}"' for s in _corpus_sources[:3]) if _corpus_sources else "uploaded documents"
+        if _recent_upload and _last_indexed_file[0]:
+            _note_label = f'The user recently uploaded "{_last_indexed_file[0]}"'
+        else:
+            _note_label = f"The user has indexed documents ({_src_list})"
         context_parts.append(
-            f"[NOTE: The user recently uploaded \"{_last_indexed_file[0]}\" which has been "
-            "indexed. The excerpts above are from this file. Reference them directly when "
-            "answering questions about the file. Use <tool:find query> to retrieve more "
-            "specific sections if needed. Do NOT pretend to have read the file if the "
-            "excerpts above don't contain the answer — use the find tool instead.]"
+            f"[NOTE: {_note_label} — excerpts are included above. "
+            "Reference the excerpts directly when answering questions about these documents. "
+            "Use <tool:find query> to retrieve more specific sections if needed. "
+            "Do NOT pretend to have read or remember the file contents if the excerpts "
+            "above don't contain the answer — use the find tool or say you need to search.]"
         )
 
     # Cross-session continuity — inject topic/thread awareness from prior sessions
@@ -5497,8 +5551,9 @@ plt.tight_layout()
             if "```python" in _hc or "<tool:" in _hc or "▶ output" in _hc or "k-means" in _hc.lower() or "KMeans" in _hc:
                 _needs_tools = True
                 break
-    # Recently uploaded file — keep find tool available so model can reference content
-    if not _needs_tools and _recent_upload:
+    # Corpus content available — keep find tool available so model can reference content
+    # Works for both recent uploads AND persisted corpus after restart
+    if not _needs_tools and (_recent_upload or _corpus_injected):
         _needs_tools = True
     _tool_sys = _TOOL_SYSTEM if _needs_tools else "Respond in the same language the user is writing in. Default to English if unclear."
     _full_sys = (_sys_content + "\n\n" + _tool_sys) if _sys_content else _tool_sys
@@ -7836,7 +7891,7 @@ async def api_upload(file: UploadFile):
             except Exception as _ae:
                 _auto_analysis = f"\n\n*Could not auto-analyse `{fname}`: {_ae}*"
 
-        n = mem.index_corpus(tmp_path)
+        n = mem.index_corpus(tmp_path, source=fname)
         try:
             from pathlib import Path as _P
             text = mem.corpus._extract_text(_P(tmp_path))

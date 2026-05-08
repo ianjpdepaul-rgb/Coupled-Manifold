@@ -228,7 +228,7 @@ class Corpus:
         # Plaintext fallback — md, txt, json, py, etc.
         return path.read_text(errors="ignore")
 
-    def index_file(self, path: str):
+    def index_file(self, path: str, source: str = None):
         path = Path(path)
         if not path.exists():
             print(f"  Corpus: file not found: {path}")
@@ -237,7 +237,7 @@ class Corpus:
         if not text.strip():
             print(f"  Corpus: no text extracted from {path.name}")
             return 0
-        return self.index(text, source=str(path.name))
+        return self.index(text, source=source or str(path.name))
 
     def index_directory(self, directory: str,
                         extensions=(".md", ".txt", ".json", ".py",
@@ -1004,9 +1004,9 @@ class Memory:
         threading.Thread(target=self.identity.observe, args=(content,),
                          kwargs={"source": "conversation"}, daemon=True).start()
 
-    def index_corpus(self, path: str):
-        """Index a single file into the corpus."""
-        return self.corpus.index_file(path)
+    def index_corpus(self, path: str, source: str = None):
+        """Index a single file into the corpus. Pass source= to override the filename."""
+        return self.corpus.index_file(path, source=source)
 
     def index_directory(self, directory: str):
         """Index all text files in a directory."""
@@ -1051,10 +1051,17 @@ class Memory:
             relevant = [(s, c) for s, c in scored if s >= min_score]
             if relevant:
                 parts.append("[RELEVANT EXCERPTS FROM THE USER'S WRITING — for context only, not your own words]")
+                # Budget: up to ~3000 chars total for corpus, full chunk text preferred
+                _corpus_budget = 3000
+                _corpus_used = 0
                 for _, c in relevant:
                     src = c.get("source", "unknown")
-                    txt = c.get("text", "")[:400]
-                    parts.append(f"[user writing — {src}]\n{txt}")
+                    txt = c.get("text", "")
+                    _cap = min(len(txt), _corpus_budget - _corpus_used)
+                    if _cap <= 50:
+                        break  # no room left
+                    parts.append(f"[user writing — {src}]\n{txt[:_cap]}")
+                    _corpus_used += _cap
 
         return "\n\n".join(parts) if parts else ""
 
