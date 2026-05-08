@@ -62,5 +62,6 @@ Graceful.app/
 app.py.bak
 icon.png
 /static/
+!/static/bunny_game.js
 *.jsonl
 !tests/chat_agent/baselines/*.jsonl
