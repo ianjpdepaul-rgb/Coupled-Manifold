@@ -224,20 +224,55 @@ echo "✅  API keys saved."
 # ── 8. Download model ────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo "  Downloading Model (~7 GB, one-time only)"
+echo "  Model Setup"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-echo "  Model: mlx-community/gemma-3-12b-it-4bit"
-echo "  MLX-native 4-bit quantization  ·  128K context  ·  vision + text"
-echo ""
 
-"$PY" -c "
+CURRENT_MODEL="mlx-community/gemma-3-12b-it-4bit"
+HF_CACHE="$HOME/.cache/huggingface/hub"
+EXPECTED_DIR="models--mlx-community--gemma-3-12b-it-4bit"
+
+# Clean old model weights (e.g. gemma-4-e4b from earlier versions)
+if [ -d "$HF_CACHE" ]; then
+    for old in "$HF_CACHE"/models--mlx-community--gemma-*; do
+        [ -d "$old" ] || continue
+        [ "$(basename "$old")" = "$EXPECTED_DIR" ] && continue
+        SIZE=$(du -sh "$old" 2>/dev/null | cut -f1)
+        echo "  🧹 Removing old model: $(basename "$old") ($SIZE)"
+        rm -rf "$old"
+    done
+fi
+
+# Clean stale checkpoints from a different model
+CKPT_MARKER="$DIR/manifold_data/checkpoints/.model_id"
+if [ -f "$CKPT_MARKER" ]; then
+    PREV_MODEL=$(cat "$CKPT_MARKER")
+    if [ "$PREV_MODEL" != "$CURRENT_MODEL" ]; then
+        STALE="$DIR/manifold_data/checkpoints_stale_$(echo "$PREV_MODEL" | tr '/' '_')"
+        echo "  🧹 Moving stale checkpoints ($PREV_MODEL)"
+        mv "$DIR/manifold_data/checkpoints" "$STALE"
+        mkdir -p "$DIR/manifold_data/checkpoints"
+    fi
+fi
+
+# Download correct model if not cached
+if [ -d "$HF_CACHE/$EXPECTED_DIR" ]; then
+    echo "  ✅ Model already downloaded: $CURRENT_MODEL"
+else
+    echo "  Model: $CURRENT_MODEL"
+    echo "  MLX-native 4-bit quantization  ·  128K context  ·  vision + text"
+    echo "  Downloading (~7 GB, one-time only)..."
+    echo ""
+    "$PY" -c "
 from huggingface_hub import snapshot_download
-print('  Downloading mlx-community/gemma-3-12b-it-4bit ...')
-snapshot_download(repo_id='mlx-community/gemma-3-12b-it-4bit')
-print('  Done.')
+snapshot_download(repo_id='$CURRENT_MODEL')
 "
-echo "✅  Model downloaded."
+    echo "✅  Model downloaded."
+fi
+
+# Stamp model ID
+mkdir -p "$DIR/manifold_data/checkpoints"
+echo "$CURRENT_MODEL" > "$DIR/manifold_data/checkpoints/.model_id"
 
 # ── 9. Build Graceful.app ────────────────────────────────────────
 echo ""
