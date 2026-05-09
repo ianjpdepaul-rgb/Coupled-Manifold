@@ -310,6 +310,54 @@ if not os.path.exists(_KEYS_PATH):
 for d in ("sessions", "checkpoints", "logs", "static", "corpus"):
     os.makedirs(f"{DATA_DIR}/{d}", exist_ok=True)
 
+# ── Model migration — detect and clean old weights ──────────────────────────
+_hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+_expected_model_dir = f"models--{MODEL.replace('/', '--')}"
+
+if os.path.isdir(_hf_cache):
+    for _d in os.listdir(_hf_cache):
+        if not _d.startswith("models--mlx-community--gemma"):
+            continue
+        if _d == _expected_model_dir:
+            continue
+        _old_path = os.path.join(_hf_cache, _d)
+        if os.path.isdir(_old_path):
+            import shutil as _shutil_rm
+            _size_mb = sum(
+                os.path.getsize(os.path.join(dp, f))
+                for dp, _, fns in os.walk(_old_path) for f in fns
+            ) / (1024 * 1024)
+            print(f"  🧹 Removing old model cache: {_d} ({_size_mb:.0f} MB)")
+            _shutil_rm.rmtree(_old_path, ignore_errors=True)
+            del _shutil_rm
+
+    # If correct model isn't cached, download it now
+    if not os.path.isdir(os.path.join(_hf_cache, _expected_model_dir)):
+        print(f"\n  📦 Downloading {MODEL} (~7 GB, one-time only)...")
+        from huggingface_hub import snapshot_download as _hf_download
+        _hf_download(repo_id=MODEL)
+        print(f"  ✅ Model downloaded.")
+        del _hf_download
+
+# Stale checkpoints from a different model architecture won't load — move aside
+_ckpt_dir = f"{DATA_DIR}/checkpoints"
+if os.path.isdir(_ckpt_dir) and os.listdir(_ckpt_dir):
+    _ckpt_marker = f"{_ckpt_dir}/.model_id"
+    _prev_model = ""
+    if os.path.exists(_ckpt_marker):
+        with open(_ckpt_marker) as _mf:
+            _prev_model = _mf.read().strip()
+    if _prev_model and _prev_model != MODEL:
+        _stale_dir = f"{_ckpt_dir}_stale_{_prev_model.replace('/', '_')}"
+        print(f"  🧹 Moving stale checkpoints ({_prev_model}) → {os.path.basename(_stale_dir)}")
+        os.rename(_ckpt_dir, _stale_dir)
+        os.makedirs(_ckpt_dir, exist_ok=True)
+    # Stamp current model
+    with open(_ckpt_marker, "w") as _mf:
+        _mf.write(MODEL)
+
+del _hf_cache, _expected_model_dir
+
 # Write PWA static files
 os.makedirs("./static", exist_ok=True)
 
