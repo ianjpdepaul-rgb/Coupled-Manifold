@@ -5669,6 +5669,32 @@ plt.tight_layout()
         )
         _sys_sections.append((12, 8, _stats_instr))
 
+    # ── 12b. Prose writing kickstart — prevent confirmation loops ──────────
+    # Detect actual writing requests (verb+object patterns, not bare nouns)
+    # to avoid false positives on "I read an article" or "that essay was good".
+    _write_verbs = ("write about", "write a ", "write an ", "write me",
+                    "write the", "write this", "draft a", "draft an",
+                    "compose a", "compose an", "compose the")
+    _write_objects = ("paper on", "report on", "write an essay",
+                      "write an article", "write a paper", "write a report")
+    _is_prose_request = (any(w in _q_lower for w in _write_verbs)
+                         or any(w in _q_lower for w in _write_objects)) and not _is_code_request
+    # Follow-ups: topic already discussed, user now says "write it" / "go"
+    if not _is_prose_request and history:
+        _last_user = _q_lower.strip()
+        if _last_user in ("write it", "do it", "just write it", "go ahead",
+                          "yeah write it", "yes write it", "so write it",
+                          "write about it", "so write about it", "yeah go ahead"):
+            _is_prose_request = True
+    if _is_prose_request:
+        _sys_sections.append((12, 7, (
+            "WRITING RULE: The user wants you to write. "
+            "First, gather what you know — from the conversation, from context, from your knowledge. "
+            "Organize your thoughts into a clear structure. Then compose the piece in full. "
+            "Do not discuss the approach or seek confirmation — the user wants prose, not a plan. "
+            "Stay in your voice. For long pieces, use <tool:write>topic</tool:write>."
+        )))
+
     # ── Natural-language plot intercept — catches "plot sin(x)" without slash ──
     # Conservative: only fires when expression is unambiguously mathematical
     # (must contain the variable `x` AND a math function/operator — not just any word with parens)
@@ -5698,9 +5724,10 @@ plt.tight_layout()
     _is_code_request = any(w in user_msg.lower() for w in [
         "graph", "plot", "chart", "run", "code", "cluster", "k-means", "kmeans",
         "analyze", "analyse", "calculate", "compute", "draw", "show me", "visuali",
-        "make a", "create a", "build a", "generate a", "write a", "make me",
+        "make a", "create a", "build a", "generate a", "make me",
         "dataframe", "dataset", "df", "csv", "table", "histogram", "scatter",
-        "regression", "correlation", "model", "train", "predict", "fit",
+        "regression", "correlation", "train", "predict", "fit",
+        "write code", "write a script", "write a function",
     ])
     if _ctx_route == "small" and "?" not in user_msg and not think_mode[0] and not _is_code_request:
         _sys_sections.append((13, 6, (
