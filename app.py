@@ -5669,7 +5669,17 @@ plt.tight_layout()
         )
         _sys_sections.append((12, 8, _stats_instr))
 
-    # ── 12b. Prose writing kickstart — prevent confirmation loops ──────────
+    # ── 12b. Code vs prose detection ──────────────────────────────────────
+    _is_code_request = any(w in user_msg.lower() for w in [
+        "graph", "plot", "chart", "run", "code", "cluster", "k-means", "kmeans",
+        "analyze", "analyse", "calculate", "compute", "draw", "show me", "visuali",
+        "make a", "create a", "build a", "generate a", "make me",
+        "dataframe", "dataset", "df", "csv", "table", "histogram", "scatter",
+        "regression", "correlation", "train", "predict", "fit",
+        "write code", "write a script", "write a function",
+    ])
+
+    # ── 12c. Prose writing kickstart — prevent confirmation loops ──────────
     # Detect actual writing requests (verb+object patterns, not bare nouns)
     # to avoid false positives on "I read an article" or "that essay was good".
     _write_verbs = ("write about", "write a ", "write an ", "write me",
@@ -5721,14 +5731,6 @@ plt.tight_layout()
             return
 
     # ── 13. Brevity gate (medium — simple turn guard) ──
-    _is_code_request = any(w in user_msg.lower() for w in [
-        "graph", "plot", "chart", "run", "code", "cluster", "k-means", "kmeans",
-        "analyze", "analyse", "calculate", "compute", "draw", "show me", "visuali",
-        "make a", "create a", "build a", "generate a", "make me",
-        "dataframe", "dataset", "df", "csv", "table", "histogram", "scatter",
-        "regression", "correlation", "train", "predict", "fit",
-        "write code", "write a script", "write a function",
-    ])
     if _ctx_route == "small" and "?" not in user_msg and not think_mode[0] and not _is_code_request:
         _sys_sections.append((13, 6, (
             "CRITICAL: Respond in 1-2 sentences maximum. "
