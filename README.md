@@ -136,6 +136,22 @@ This is a research deployment of the Coupled Manifold Safety Framework. The fram
 
 ---
 
+## Uninstall / Reset
+
+**Full reset** (keeps your corpus, removes everything else — re-run `setup.sh` after):
+```
+make clean-all
+```
+
+**Complete uninstall** (removes everything including user data and cached model weights):
+```
+bash uninstall.sh
+```
+
+**Upgrading from an older version** (e.g., Gemma 4 E4B weights): run `make clean-all` first — it removes old model caches so `setup.sh` downloads the correct one.
+
+---
+
 ## Troubleshooting
 
 **"app is damaged" or won't open** — macOS quarantine flag. Run this in Terminal:

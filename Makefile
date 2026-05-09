@@ -1,4 +1,4 @@
-.PHONY: test test-quick test-full test-manifold test-harness test-harness-managed smoke ux start start-test unit integration lint format clean agent-test agent-baseline agent-regression
+.PHONY: test test-quick test-full test-manifold test-harness test-harness-managed smoke ux start start-test unit integration lint format clean clean-all agent-test agent-baseline agent-regression
 
 # ── pytest-based targets ────────────────────────────────
 
@@ -86,3 +86,39 @@ clean:
 	find . -path ./graceful_env -prune -o -name '__pycache__' -print -exec rm -rf {} +
 	find . -path ./graceful_env -prune -o -name '*.pyc' -print -exec rm -f {} +
 	rm -rf .pytest_cache
+
+# Full reset — remove venv, old model weights, stale data. Re-run setup.sh after.
+clean-all: clean
+	@echo ""
+	@echo "═══ Graceful — Full Reset ═══"
+	@echo ""
+	@# Remove virtual environment
+	@if [ -d graceful_env ]; then echo "  Removing virtual environment..."; rm -rf graceful_env; echo "  ✓ Removed graceful_env"; fi
+	@# Remove built .app bundle
+	@if [ -d Graceful.app ]; then echo "  Removing Graceful.app..."; rm -rf Graceful.app; echo "  ✓ Removed Graceful.app"; fi
+	@# Remove old model caches (gemma-3, gemma-4, and any other mlx-community gemma variants)
+	@echo "  Checking model caches..."
+	@for d in $(HOME)/.cache/huggingface/hub/models--mlx-community--gemma-*; do \
+		if [ -d "$$d" ]; then \
+			echo "  Removing $$(basename $$d)..."; \
+			rm -rf "$$d"; \
+			echo "  ✓ Removed"; \
+		fi; \
+	done
+	@# Remove sentence-transformers cache
+	@for d in $(HOME)/.cache/huggingface/hub/models--sentence-transformers--*; do \
+		if [ -d "$$d" ]; then \
+			echo "  Removing $$(basename $$d)..."; \
+			rm -rf "$$d"; \
+			echo "  ✓ Removed"; \
+		fi; \
+	done
+	@# Remove stale runtime data (sessions, checkpoints, logs — NOT corpus)
+	@echo "  Cleaning runtime data..."
+	@rm -rf manifold_data/sessions manifold_data/checkpoints manifold_data/logs
+	@rm -rf manifold_data/backups manifold_data/consolidation manifold_data/archives
+	@rm -f manifold_data/*.json manifold_data/*.npz manifold_data/.setup_complete manifold_data/.corpus_seeded manifold_data/manifold.lock
+	@echo "  ✓ Runtime data cleared (corpus preserved)"
+	@echo ""
+	@echo "  Done. Run 'bash setup.sh' to reinstall."
+	@echo ""
