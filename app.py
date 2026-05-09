@@ -993,9 +993,9 @@ print(f"  Adapters: {count} | Trainable: {trainable:,} / {total:,}")
 # Cap MLX Metal memory to 12 GB on 16 GB machines — leaves ~4 GB for OS + Python.
 # 12B model + Hessian trace (3x fwd+bwd) needs headroom to avoid IOGPUFamily panics.
 try:
-    mx.set_memory_limit(int(10 * 1024**3))  # stay well under max_recommended_working_set (10.67 GB)
-    mx.set_cache_limit(int(1 * 1024**3))   # tight cache — free stale Metal buffers aggressively
-    print("  Memory limit: 10 GB | Cache limit: 1 GB")
+    mx.set_memory_limit(int(8.5 * 1024**3))  # 16GB machine — leave ~7.5GB for OS + Python + safety margin
+    mx.set_cache_limit(int(1 * 1024**3))    # tight cache — free stale Metal buffers aggressively
+    print("  Memory limit: 8.5 GB | Cache limit: 1 GB")
 except Exception:
     pass  # not on Metal or older MLX — safe to ignore
 
@@ -2250,6 +2250,22 @@ _registry.register("draft_email", _wf_draft_email,
                    skip_when="User mentions email casually — don't open mail client unless clearly requested")
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ── Chunked write tool — model-invocable long-form generation ─────────────────
+# Sentinel: tool handler sets this; generation loop checks it and switches mode.
+_chunked_write_topic = [None]
+
+def _tool_write(arg: str) -> tuple[str, str]:
+    """Tool handler — just stashes the topic. The generation loop does the rest."""
+    _chunked_write_topic[0] = arg.strip()
+    return ("__CHUNKED_WRITE__", "")
+
+_registry.register("write", _tool_write,
+                   description="write a long-form essay, paper, or report — generates section by section to avoid memory limits",
+                   usage_example="the history of neural networks",
+                   permission="auto",
+                   use_when="User asks you to write a paper, essay, report, article, or any long-form document (500+ words expected). Also use when user says 'write about', 'draft a paper on', 'compose an essay'.",
+                   skip_when="Short answers, explanations, summaries, or conversational replies — only use for dedicated long-form writing tasks")
+
 # ── Phase 5: Temporal awareness ───────────────────────────────────────────────
 _temporal = TemporalAwareness(DATA_DIR)
 _temporal.record_session_start()
@@ -2489,6 +2505,7 @@ _TOOL_OPEN_RE   = re.compile(r'<tool:(\w+)>([^<]{3,})')  # open-ended (no closin
 _MAX_TOOL_CALLS = 3
 
 _TOOL_SYSTEM = _registry.tool_prompt()
+_TOOL_COMPACT = _registry.compact_prompt()
 
 
 def execute_tool(name: str, arg: str, *, user_requested: bool = False) -> tuple[str, str]:
@@ -4816,6 +4833,176 @@ plt.tight_layout()
             f"What's the natural next question or insight?"
         )
 
+    # ── /write <topic> — chunked long-form generation ───────────────────────
+    # Generates an outline, then writes each section independently with cache
+    # clearing between sections.  Keeps KV cache small enough for 16 GB machines.
+    if user_msg.strip().lower().startswith("/write"):
+        _write_topic = user_msg[6:].strip()
+        if not _write_topic:
+            history = list(history or [])
+            history.append({"role": "user",      "content": user_msg})
+            history.append({"role": "assistant", "content": "Usage: `/write <topic>` — e.g. `/write the history of neural networks`"})
+            yield "", history
+            return
+
+        history = list(history or [])
+        history.append({"role": "user", "content": user_msg})
+        yield "", history + [{"role": "assistant", "content": "*outlining…*"}]
+
+        model_active, tok_active, ctrl_active, opt_active, model_label = pair.get_active(user_msg)
+
+        # ── Writer system prompt — carries tone/intent from user's original request ──
+        _write_sys = (
+            "You are writing a long-form document. Match the register implied by the request — "
+            "academic for 'paper', conversational for 'blog post', precise for 'report'. "
+            "Write with substance: concrete details, specific examples, clear arguments. "
+            "Avoid filler, throat-clearing, and generic statements. "
+            "Every paragraph should advance the argument or add new information."
+        )
+
+        def _chunked_gen(_cg_instruction, _cg_sys=_write_sys, _cg_max=600):
+            """Single-pass generation with minimal context.  Caller holds _model_lock."""
+            import gc as _cg_gc
+            _cg_gc.collect()
+            mx.synchronize()
+            mx.clear_cache()
+            _cg_msgs = [{"role": "system", "content": _cg_sys},
+                        {"role": "user",   "content": _cg_instruction}]
+            with _tokenizer_lock:
+                _cg_tok = tok_active.tokenizer if hasattr(tok_active, 'tokenizer') else tok_active
+                _cg_prompt = _cg_tok.apply_chat_template(_cg_msgs, tokenize=False, add_generation_prompt=True)
+            _cg_kwargs = dict(max_tokens=_cg_max, temp=0.7, top_p=0.95, repetition_penalty=1.3)
+            if _PREFILL_STEP_SUPPORTED:
+                _cg_kwargs['prefill_step_size'] = 256
+            _cg_tokens = []
+            for _cg_r in _mlx_stream(model_active, tok_active, _cg_prompt, **_cg_kwargs):
+                _cg_tokens.append(_cg_r.text if hasattr(_cg_r, 'text') else str(_cg_r))
+            _cg_gc.collect()
+            mx.synchronize()
+            mx.clear_cache()
+            return "".join(_cg_tokens)
+
+        # ── Phase 1: outline ──
+        if not _model_lock.acquire(timeout=15):
+            history.append({"role": "assistant", "content": "Model busy — try again in a moment."})
+            yield "", history
+            return
+        _lock_holder[0] = "chunked_write"
+        try:
+            _outline = _chunked_gen(
+                f"The user asked: \"{_write_topic}\"\n\n"
+                f"Create a numbered outline (6-8 sections) for this piece.\n"
+                f"Format each line as:  1. Section Title — one-sentence description of what this section covers\n"
+                f"Include Introduction and Conclusion. Output ONLY the outline, no commentary.",
+                _cg_max=400)
+        finally:
+            _lock_holder[0] = "none"
+            _model_lock.release()
+
+        # Parse numbered sections
+        _sections = re.findall(r'(\d+)\.\s*\*{0,2}(.+?)(?:\*{0,2})\s*[-—–:]\s*(.+)', _outline)
+        if not _sections:
+            # Fallback: simpler pattern
+            _sections = [(m.group(1), m.group(2).strip(), "")
+                         for m in re.finditer(r'(\d+)\.\s+(.+)', _outline)]
+        if not _sections:
+            history.append({"role": "assistant", "content": f"**Outline:**\n\n{_outline}\n\n*(couldn't parse sections — try rephrasing)*"})
+            yield "", history
+            return
+
+        _full_paper = f"# {_write_topic.strip().title()}\n\n"
+        yield "", history + [{"role": "assistant",
+                              "content": f"*writing — {len(_sections)} sections…*\n\n{_full_paper}▌"}]
+
+        # Running context — one-line summary of each completed section so the model
+        # can maintain narrative flow without carrying full prior text in the prompt.
+        _prior_summaries = []
+
+        # ── Phase 2: generate each section ──
+        for _si, _sec in enumerate(_sections):
+            _sec_num, _sec_title = _sec[0], _sec[1].strip().rstrip("*")
+            _sec_desc = _sec[2].strip() if len(_sec) > 2 and _sec[2] else ""
+
+            if not _model_lock.acquire(timeout=30):
+                _full_paper += f"\n\n## {_sec_title}\n\n*(generation interrupted — model busy)*\n\n"
+                break
+            _lock_holder[0] = f"chunked_write_s{_si+1}"
+            try:
+                # Build running context from prior sections
+                _prior_ctx = ""
+                if _prior_summaries:
+                    _prior_ctx = (
+                        "\n\nSections already written (do NOT repeat these points):\n"
+                        + "\n".join(f"  - {s}" for s in _prior_summaries)
+                        + "\n\nBuild on what came before. Maintain narrative continuity."
+                    )
+
+                _sec_instruction = (
+                    f"The user asked: \"{_write_topic}\"\n\n"
+                    f"Full outline:\n{_outline}\n"
+                    f"{_prior_ctx}\n\n"
+                    f"Now write section {_sec_num}: {_sec_title}"
+                    + (f" — {_sec_desc}" if _sec_desc else "") +
+                    "\n\nWrite ONLY this section. Start with a markdown ## heading. "
+                    "Be substantive. No preamble, no meta-commentary about the document."
+                )
+
+                # Stream tokens for this section so the user sees progress
+                import gc as _wr_gc
+                _wr_gc.collect()
+                mx.synchronize()
+                mx.clear_cache()
+                _sec_msgs = [{"role": "system", "content": _write_sys},
+                             {"role": "user",   "content": _sec_instruction}]
+                with _tokenizer_lock:
+                    _sec_tok = tok_active.tokenizer if hasattr(tok_active, 'tokenizer') else tok_active
+                    _sec_prompt = _sec_tok.apply_chat_template(_sec_msgs, tokenize=False, add_generation_prompt=True)
+                _sec_kwargs = dict(max_tokens=600, temp=0.7, top_p=0.95, repetition_penalty=1.3)
+                if _PREFILL_STEP_SUPPORTED:
+                    _sec_kwargs['prefill_step_size'] = 256
+                _sec_tokens = []
+                for _sec_r in _mlx_stream(model_active, tok_active, _sec_prompt, **_sec_kwargs):
+                    if stop_event.is_set():
+                        break
+                    _sec_text = _sec_r.text if hasattr(_sec_r, 'text') else str(_sec_r)
+                    _sec_tokens.append(_sec_text)
+                    _sec_partial = "".join(_sec_tokens)
+                    _progress = f"*section {_si+1}/{len(_sections)}*\n\n"
+                    yield "", history + [{"role": "assistant",
+                                          "content": _progress + _full_paper + _sec_partial + " ▌"}]
+                _wr_gc.collect()
+                mx.synchronize()
+                mx.clear_cache()
+
+                # Extract one-line summary of this section for running context
+                _sec_full_text = "".join(_sec_tokens).strip()
+                _sec_sentences = re.split(r'(?<=[.!?])\s+', _sec_full_text.replace("## ", ""))
+                # First substantive sentence (skip headings and very short fragments)
+                _sec_summary = _sec_title
+                for _ss in _sec_sentences:
+                    if len(_ss) > 30 and not _ss.startswith("#"):
+                        _sec_summary = f"{_sec_title}: {_ss[:120]}"
+                        break
+                _prior_summaries.append(_sec_summary)
+
+            finally:
+                _lock_holder[0] = "none"
+                _model_lock.release()
+
+            if stop_event.is_set():
+                stop_event.clear()
+                _full_paper += "".join(_sec_tokens).strip() + "\n\n"
+                break
+
+            _full_paper += "".join(_sec_tokens).strip() + "\n\n"
+
+        history.append({"role": "assistant", "content": _full_paper.strip()})
+        yield "", history
+        # Log to session_log for memory/archive
+        session_log.append({"user": user_msg, "response": _full_paper.strip()[:500],
+                            "ts": time.time(), "model": model_label})
+        return
+
     # ── /zettelkasten — export session as Zettelkasten atomic notes ───────────
     _zettelkasten_turn = [False]
     if user_msg.strip().lower() == "/zettelkasten":
@@ -5235,7 +5422,7 @@ plt.tight_layout()
             "/adapter","/visionquality","/scaffold","/remember","/recall","/timer",
             "/search","/debate","/eli5","/teacher","/brainstorm","/devil","/peer",
             "/hypothesis","/swot","/risk","/translate","/elaborate","/rhetorical",
-            "/evolve","/thread","/continue","/backup",
+            "/evolve","/thread","/continue","/backup","/write",
             "/zettelkasten","/help","/counterpoint","/flashcards","/contradict",
             "/abstract","/quiz","/glossary","/week","/brief","/dream","/reading",
             "/data","/undo","/modifications","/consolidate","/trace-mode","/learn",
@@ -5270,7 +5457,7 @@ plt.tight_layout()
     # This way the message trimmer and the final prompt trimmer agree on the ceiling.
     try:
         _pre_budget_mem = mx.get_active_memory() / (1024**3)
-        _pre_headroom = max(0, 16 - _pre_budget_mem - 3.5)
+        _pre_headroom = max(0, 16 - _pre_budget_mem - 5)
         # Messages become tokens; template/system add ~2000 chars on top.
         # Budget = headroom-based cap minus overhead estimate.
         _MSG_CHAR_BUDGET = int(max(2000, min(7000, _pre_headroom * 1800 - 1500)))
@@ -5300,16 +5487,26 @@ plt.tight_layout()
         "The thinking is private — only the answer after </think> is shown."
     ) if think_mode[0] else None
 
-    # ── Inject system prompt (user-defined + think mode + tone + tool dispatch) ──
-    _sys_content = system_prompt[0].strip()
-    # Substitute placeholders in personality prompt
+    # ── Build system prompt from prioritized sections ──────────────────────────
+    # Each section: (display_order, priority, content)
+    # Priority 10 = always survives truncation, 1 = first to drop.
+    # When total exceeds cap, lowest-priority sections are dropped entirely
+    # (no mid-sentence cuts).  Display order preserved in output.
+    _sys_sections = []   # [(display_order, priority, content), ...]
     _un = _user_name[0] or "the user"
-    _sys_content = _sys_content.replace("{user_name}", _un).replace("{assistant_name}", _an)
-    # Reinforce identity — prevent model from confusing its name with the user's name
+
+    # ── 0. Date stamp (low priority — model rarely needs it) ──
+    _now_str = datetime.datetime.now().strftime("%A, %B %d, %Y at %-I:%M %p")
+    _sys_sections.append((0, 3, f"[Current date and time: {_now_str}]"))
+
+    # ── 1. Think mode (high — changes output format) ──
+    if _think_sys:
+        _sys_sections.append((1, 9, _think_sys))
+
+    # ── 2. Identity (critical — who is who) ──
     _identity = f"Your name is {_an}. You are the assistant. "
     if _user_name[0]:
         _identity += f"The user's name is {_user_name[0]} — that is NOT your name. "
-    # Age-aware register calibration — humor, references, tone adapt to age group
     _age_str = _user_age[0] if _user_age[0] else ""
     if _age_str:
         try:
@@ -5326,48 +5523,44 @@ plt.tight_layout()
                 _identity += f"{_un} is {_age_int}. Straightforward, no condescension. They know things you don't — defer when warranted. Dry humor lands better than loud. "
         except (ValueError, TypeError):
             pass
-    _sys_content = _identity + "\n\n" + _sys_content
-    # Locked base always appended — not overridable by user settings
-    _sys_content = (_sys_content + "\n\n" + _LOCKED_BASE) if _sys_content else _LOCKED_BASE
-    if _think_sys and _sys_content:
-        _sys_content = _think_sys + "\n\n" + _sys_content
-    elif _think_sys:
-        _sys_content = _think_sys
+    _sys_sections.append((2, 10, _identity))
 
-    # ── Mode injections: antagonist / socratic / compress ──────────────────────
+    # ── 3. Locked base — epistemic honesty (critical, non-negotiable) ──
+    _sys_sections.append((3, 9, _LOCKED_BASE))
+
+    # ── 4. Personality / voice (medium — defines model character) ──
+    _personality = system_prompt[0].strip()
+    _personality = _personality.replace("{user_name}", _un).replace("{assistant_name}", _an)
+    if _personality:
+        _sys_sections.append((4, 6, _personality))
+
+    # ── 5. Mode injections (high when active — they override behavior) ──
     if _antagonist_armed[0]:
-        _antagonist_instr = (
+        _sys_sections.append((5, 8, (
             "For this response only: take the opposing position on whatever the user says. "
             "Steel-man the counter-argument. Don't agree with anything."
-        )
-        _sys_content = (_sys_content + "\n\n" + _antagonist_instr) if _sys_content else _antagonist_instr
-        _antagonist_armed[0] = False  # one-turn only — reset immediately
-
+        )))
+        _antagonist_armed[0] = False
     if _socratic_mode[0]:
-        _socratic_instr = (
+        _sys_sections.append((5, 7, (
             "SOCRATIC MODE: Every response must end with exactly one question "
             "that advances the conversation or challenges an assumption."
-        )
-        _sys_content = (_sys_content + "\n\n" + _socratic_instr) if _sys_content else _socratic_instr
-
+        )))
     if _compress_mode[0]:
-        _compress_instr = (
+        _sys_sections.append((5, 7, (
             "COMPRESSION MODE: Every response is exactly one sentence. "
             "Pick the most important sentence and stop."
-        )
-        _sys_content = (_sys_content + "\n\n" + _compress_instr) if _sys_content else _compress_instr
+        )))
 
-    # ── Persona injection (Layer 3) — appends to base personality, never replaces ──
+    # ── 6. Persona (medium — session-scoped character shift) ──
     if _active_persona[0]:
-        _persona_instr = _active_persona[0]["content"]
-        _sys_content = (_sys_content + "\n\n" + _persona_instr) if _sys_content else _persona_instr
+        _sys_sections.append((6, 5, _active_persona[0]["content"]))
 
-    # ── Anti-mode tone: graduated response to quality drop — scales with severity ──
+    # ── 7. Anti-drift tone (medium-high — quality control) ──
     if ctrl_active.mode in ("anti", "both"):
         _a_cnt = getattr(ctrl_active, "anti_count", 0)
         _c_patho = getattr(ctrl_active, "consec_patho", 0)
         if _a_cnt <= 1 and _c_patho <= 1:
-            # First strike — cool it down, not a beatdown
             _anti_tone = (
                 "NOTE: Conversation quality has slipped. Dial back the warmth — "
                 "be direct and efficient. If the question is vague, ask what they actually mean "
@@ -5375,7 +5568,6 @@ plt.tight_layout()
                 "Still helpful — just no padding."
             )
         elif _a_cnt <= 3 or _c_patho <= 2:
-            # Repeat offender — patience gone, but measured
             _anti_tone = (
                 "ANTI-DRIFT: Quality has been consistently low. You're done being patient. "
                 "Direct answers only — if something's been covered, say so and move on. "
@@ -5383,7 +5575,6 @@ plt.tight_layout()
                 "Cold, not cruel. You're not performing disappointment — you just don't have time for this."
             )
         else:
-            # Sustained degradation — full snob mode, crossing a snob
             _anti_tone = (
                 "ANTI-DRIFT SUSTAINED: This conversation has gone off the rails and stayed there. "
                 "You are not annoyed — you are disappointed in a way that's beyond annoyance. "
@@ -5394,29 +5585,25 @@ plt.tight_layout()
                 "No warmth. No 'great point.' One sentence where one sentence suffices. "
                 "You know things they don't — act like it."
             )
-        _sys_content = (_sys_content + "\n\n" + _anti_tone) if _sys_content else _anti_tone
+        _sys_sections.append((7, 7, _anti_tone))
 
-    # ── Dream / scaffold / reading injections ──────────────────────────────────
+    # ── 8. Dream / scaffold / reading injections (low-medium, one-shot) ──
     for _inj in [_dream_injection, _scaffold_injection, _reading_injection]:
         if _inj[0]:
-            _sys_content = (_sys_content + "\n\n" + _inj[0]) if _sys_content else _inj[0]
+            _sys_sections.append((8, 4, _inj[0]))
             _inj[0] = None
 
-    # ── New mode injections from command parsing ──────────────────────────────
-    # Only inject commands where user_msg was transformed to the topic (not the full instruction).
-    # Commands that set user_msg = full instruction (peer, quiz, glossary, counterpoint,
-    # flashcards, translate) don't need a separate sys_content injection.
+    # ── 9. Command-specific injections (high for that turn) ──
     for _new_inj in [
         _debate_injection, _eli5_injection, _teacher_injection,
         _brainstorm_injection, _devil_injection,
         _hypothesis_injection, _swot_injection, _risk_injection,
     ]:
         if _new_inj:
-            _sys_content = (_sys_content + "\n\n" + _new_inj) if _sys_content else _new_inj
+            _sys_sections.append((9, 8, _new_inj))
 
-    # Response length preference (S/M/L from frontend, with typing-inferred override)
+    # ── 10. Response length (medium) ──
     _effective_length = _response_length[0]
-    # When user hasn't manually set S or L, infer from typing behavior
     if _effective_length == "M" and _human_signals[0]:
         try:
             _inferred = _human_profile.infer_response_depth(_human_signals[0])
@@ -5427,24 +5614,20 @@ plt.tight_layout()
         except Exception:
             pass
     if _effective_length == "S":
-        _len_instr = "LENGTH: Respond in 1-2 sentences. Stop the moment you've answered the question."
-        _sys_content = (_sys_content + "\n\n" + _len_instr) if _sys_content else _len_instr
+        _sys_sections.append((10, 6, "LENGTH: Respond in 1-2 sentences. Stop the moment you've answered the question."))
     elif _effective_length == "L":
-        _len_instr = "LENGTH: You have room for thorough answers when the question warrants it. Go deep on substantive questions. But greetings and simple exchanges still get short responses — L mode is a ceiling, not a minimum."
-        _sys_content = (_sys_content + "\n\n" + _len_instr) if _sys_content else _len_instr
-    # M = default, no injection needed
+        _sys_sections.append((10, 5, "LENGTH: You have room for thorough answers when the question warrants it. Go deep on substantive questions. But greetings and simple exchanges still get short responses — L mode is a ceiling, not a minimum."))
 
-    # Tone matching — inject register instruction
+    # ── 11. Tone matching (low-medium) ──
     if _MODEL_ROUTER_AVAILABLE and not user_msg.startswith("/"):
         _tone = classify_tone(user_msg)
         _tone_instr = tone_instruction(_tone)
         if _tone_instr:
-            _sys_content = (_sys_content + "\n\n" + _tone_instr) if _sys_content else _tone_instr
+            _sys_sections.append((11, 4, _tone_instr))
     else:
         _tone = "casual"
 
-    # Stats / math / Python context injection
-    # Also trigger on follow-ups when recent history has code context
+    # ── 12. Stats / code instructions (high when relevant) ──
     _q_lower = user_msg.lower()
     _recent_has_code = False
     if history:
@@ -5454,7 +5637,6 @@ plt.tight_layout()
                 _recent_has_code = True
                 break
     if _STATS_RE.search(_q_lower) or _recent_has_code:
-        # Build live list of dataframes currently in namespace
         import pandas as _spd
         _live_dfs = {k: v for k, v in _code_ns.items()
                      if isinstance(v, _spd.DataFrame) and not k.startswith("_")}
@@ -5485,7 +5667,7 @@ plt.tight_layout()
             "6. Be precise. No preamble, no 'here is the code', no asking for confirmation.\n"
             "7. SHOW DON'T TELL: If asked to show, demonstrate, or visualize anything — respond with ONLY a code block. No prose before or after. The output speaks for itself."
         )
-        _sys_content = (_sys_content + "\n\n" + _stats_instr) if _sys_content else _stats_instr
+        _sys_sections.append((12, 8, _stats_instr))
 
     # ── Natural-language plot intercept — catches "plot sin(x)" without slash ──
     # Conservative: only fires when expression is unambiguously mathematical
@@ -5512,7 +5694,7 @@ plt.tight_layout()
             yield "", _h
             return
 
-    # Hard brevity gate — simple turns where the model fills its budget with filler
+    # ── 13. Brevity gate (medium — simple turn guard) ──
     _is_code_request = any(w in user_msg.lower() for w in [
         "graph", "plot", "chart", "run", "code", "cluster", "k-means", "kmeans",
         "analyze", "analyse", "calculate", "compute", "draw", "show me", "visuali",
@@ -5521,15 +5703,13 @@ plt.tight_layout()
         "regression", "correlation", "model", "train", "predict", "fit",
     ])
     if _ctx_route == "small" and "?" not in user_msg and not think_mode[0] and not _is_code_request:
-        _brevity = (
+        _sys_sections.append((13, 6, (
             "CRITICAL: Respond in 1-2 sentences maximum. "
             "Stop generating the moment you have answered. "
             "No follow-up questions, no elaboration, no filler. Say less."
-        )
-        _sys_content = (_sys_content + "\n\n" + _brevity) if _sys_content else _brevity
+        )))
 
-    # Tool dispatch instructions — only inject when query might actually use tools
-    # Saves ~80 tokens on pure conversational/analytical turns
+    # ── 14. Tool prompt (high — enables agentic capabilities) ──
     _q_lower_tools = user_msg.lower()
     _needs_tools = _is_code_request or any(w in _q_lower_tools for w in [
         "search", "find", "look up", "run ", "calculate", "compute",
@@ -5539,41 +5719,70 @@ plt.tight_layout()
         "analyze", "analyse", "correlation", "histogram", "scatter",
         "test graph", "draw", "generate", "make a", "create a", "build a",
         "dataframe", "dataset", "regression", "predict", "train", "csv",
+        "write a paper", "write an essay", "write a report", "draft a",
     ])
-    # Carry forward tool/code context from recent turns — follow-ups like
-    # "just make something up" won't contain trigger words but still need tools
     if not _needs_tools and history:
         for _hm in reversed((history or [])[-4:]):
             _hc = (_hm.get("content") or "")
             if "```python" in _hc or "<tool:" in _hc or "▶ output" in _hc or "k-means" in _hc.lower() or "KMeans" in _hc:
                 _needs_tools = True
                 break
-    # Corpus content available — keep find tool available so model can reference content
-    # Works for both recent uploads AND persisted corpus after restart
     if not _needs_tools and (_recent_upload or _corpus_injected):
         _needs_tools = True
-    _tool_sys = _TOOL_SYSTEM if _needs_tools else "Respond in the same language the user is writing in. Default to English if unclear."
-    _full_sys = (_sys_content + "\n\n" + _tool_sys) if _sys_content else _tool_sys
-    # Stage 2: append model-authored session additions
-    if _sys_prompt_additions:
-        _full_sys += "\n\n" + "\n".join(_sys_prompt_additions)
-    # Stamp current date/time so the model can answer temporal questions accurately
-    _now_str  = datetime.datetime.now().strftime("%A, %B %d, %Y at %-I:%M %p")
-    _full_sys = f"[Current date and time: {_now_str}]\n\n" + _full_sys
+    if _needs_tools:
+        # Compact tool prompt by default — fits alongside personality.
+        # Full prompt only on stats/code turns where the example matters.
+        _use_full_tools = bool(_STATS_RE.search(_q_lower) or _recent_has_code)
+        if _use_full_tools:
+            _sys_sections.append((14, 8, _TOOL_SYSTEM))
+            _sys_sections.append((140, 5, _TOOL_COMPACT))  # fallback if full doesn't fit
+        else:
+            _sys_sections.append((14, 7, _TOOL_COMPACT))
+    else:
+        _sys_sections.append((14, 4, "Respond in the same language the user is writing in. Default to English if unclear."))
 
-    # ── System prompt cap — paragraph-boundary truncation ────────────
-    # Simple queries get a tight cap; complex queries get more room.
-    # Identity + locked_base are prepended first, so they always survive.
-    # Code requests get extra room — tool prompt with <tool:run> instructions MUST survive.
+    # ── 15. Session additions (low — model-authored) ──
+    if _sys_prompt_additions:
+        _sys_sections.append((15, 3, "\n".join(_sys_prompt_additions)))
+
+    # ── Assemble: drop or trim lowest-priority sections until under cap ──
     _SYS_CAP = 1500 if _ctx_route == "small" else 3000
     if _is_code_request or _needs_tools:
         _SYS_CAP = max(_SYS_CAP, 3000)
-    if len(_full_sys) > _SYS_CAP:
-        _cut = _full_sys[:_SYS_CAP].rfind("\n\n")
-        if _cut > 500:
-            _full_sys = _full_sys[:_cut]
+
+    # Sort by priority ascending so we can pop/trim the lowest first
+    _sys_sections.sort(key=lambda x: x[1])
+    _total_chars = sum(len(s[2]) for s in _sys_sections) + 2 * max(len(_sys_sections) - 1, 0)
+
+    while _total_chars > _SYS_CAP and len(_sys_sections) > 1:
+        _overflow = _total_chars - _SYS_CAP
+        _lowest = _sys_sections[0]
+        # If we only need to trim a portion, truncate at paragraph boundary
+        if len(_lowest[2]) > _overflow + 200:
+            _keep = len(_lowest[2]) - _overflow - 20  # small margin
+            _cut = _lowest[2][:_keep].rfind("\n")
+            if _cut > _keep // 2:
+                _trimmed = _lowest[2][:_cut]
+            else:
+                _trimmed = _lowest[2][:_keep]
+            _sys_sections[0] = (_lowest[0], _lowest[1], _trimmed)
+            _total_chars = sum(len(s[2]) for s in _sys_sections) + 2 * max(len(_sys_sections) - 1, 0)
+            print(f"[SYS] trimmed section (pri={_lowest[1]}, {len(_lowest[2])}→{len(_trimmed)}ch)", flush=True)
+            break
         else:
-            _full_sys = _full_sys[:_SYS_CAP]
+            # Section too small to trim meaningfully — drop entirely
+            _sys_sections.pop(0)
+            _total_chars -= len(_lowest[2]) + 2
+            print(f"[SYS] dropped section (pri={_lowest[1]}, {len(_lowest[2])}ch): {_lowest[2][:50]}…", flush=True)
+
+    # If full tool prompt (display 14) survived, drop compact fallback (display 140)
+    _has_full_tools = any(s[0] == 14 and s[1] == 8 for s in _sys_sections)
+    if _has_full_tools:
+        _sys_sections = [s for s in _sys_sections if s[0] != 140]
+
+    # Re-sort by display order for coherent output
+    _sys_sections.sort(key=lambda x: x[0])
+    _full_sys = "\n\n".join(s[2] for s in _sys_sections)
 
     if _full_sys:
         if messages and messages[0]["role"] == "system":
@@ -5586,7 +5795,7 @@ plt.tight_layout()
     # System prompt adds ~1500-2500 chars, so budget is slightly higher here.
     try:
         _post_sys_mem = mx.get_active_memory() / (1024**3)
-        _post_headroom = max(0, 16 - _post_sys_mem - 3.5)
+        _post_headroom = max(0, 16 - _post_sys_mem - 5)
         _TOTAL_CHAR_BUDGET = int(max(2500, min(8000, _post_headroom * 1800)))
     except Exception:
         _TOTAL_CHAR_BUDGET = 6000
@@ -5760,15 +5969,15 @@ plt.tight_layout()
             # Metal OOM is C++ std::terminate — Python cannot catch it.
             _active_mem = mx.get_active_memory()
             _mem_gb = _active_mem / (1024**3)
-            # Headroom = 16GB total - active - OS/Python/framework overhead (~3.5GB).
-            # The 3.5GB accounts for macOS WindowServer, Python runtime, sentence-transformers,
-            # Metal driver overhead, and page table entries (measured from real crashes).
-            _headroom_gb = max(0, 16 - _mem_gb - 3.5)
+            # Headroom = 16GB total - active - OS/Python/framework overhead (~5GB).
+            # The 5GB accounts for macOS WindowServer, Python runtime, sentence-transformers,
+            # Metal driver overhead, page table entries, and safety margin (measured from real OOM crash).
+            _headroom_gb = max(0, 16 - _mem_gb - 5)
             # Each prompt char ≈ 0.3 tokens. Each token needs KV cache (40 layers × 2 × head_dim × n_heads × 2B)
             # + attention buffer during chunked prefill. Empirically ~0.65MB/token for 12B.
             # 1GB headroom ≈ 1536 tokens ≈ 5000 chars. Use conservative 1800 chars/GB.
             _dynamic_prompt_cap = int(_headroom_gb * 1800)
-            _dynamic_prompt_cap = max(800, min(_dynamic_prompt_cap, 7000))  # clamp [800, 7000]
+            _dynamic_prompt_cap = max(800, min(_dynamic_prompt_cap, 5000))  # clamp [800, 5000]
 
             # Hard memory gates — override formula at dangerous thresholds
             # Note: 12B model baseline is ~7.5GB, so only trigger near actual OOM.
@@ -5915,6 +6124,20 @@ plt.tight_layout()
             yield "", history + [{"role": "assistant", "content": _ind}]
 
             _result, _tool_html = execute_tool(_tname, _targ)
+
+            # ── Chunked write redirect ──────────────────────────────
+            # Model invoked <tool:write>topic</tool:write> — hand off
+            # to the chunked write path.  Lock is already released by
+            # the finally block above, so just redirect.
+            if _result == "__CHUNKED_WRITE__" and _chunked_write_topic[0]:
+                _cw_topic = _chunked_write_topic[0]
+                _chunked_write_topic[0] = None
+                # Re-enter chat as /write — yields directly to UI
+                _write_msg = f"/write {_cw_topic}"
+                for _cw_out in chat(_write_msg, history):
+                    yield _cw_out
+                return
+
             # Stash code + HTML output from run calls — shown in chat
             if _tname == "run":
                 _tools_code_blocks.append(_targ.strip())

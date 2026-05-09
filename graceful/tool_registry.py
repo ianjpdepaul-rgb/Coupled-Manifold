@@ -227,6 +227,20 @@ class ToolRegistry:
         )
         return "\n".join(lines)
 
+    def compact_prompt(self) -> str:
+        """Compact tool prompt — tool list + essentials only.  ~40% of full prompt."""
+        lines = ["Tools (default: don't use — most turns need none):"]
+        for name, meta in self._tools.items():
+            perm = self.get_permission(name)
+            if perm == "explicit":
+                continue
+            example = meta["usage_example"] or "..."
+            lines.append(f"  <tool:{name}>{example}</tool:{name}> — {meta['description']}")
+        lines.append("After a tool tag, STOP. Results appear automatically. Max 3/reply.")
+        lines.append("For code: <tool:run>python</tool:run> — act immediately, no confirmation.")
+        lines.append("For math: $...$ inline, $$...$$ display.")
+        return "\n".join(lines)
+
     @property
     def names(self) -> list[str]:
         return list(self._tools.keys())
